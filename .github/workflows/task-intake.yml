@@ -88,6 +88,7 @@ jobs:
         shell: bash
         env:
           TASK_ID: ${{ inputs.task_id }}
+          ORCHESTRATOR_AUDIT_DIR: ${{ runner.temp }}/private-audit
           ORCHESTRATOR_ROUTING_MODE: ${{ inputs.routing_mode }}
           ORCHESTRATOR_CONTROLLER: ${{ inputs.controller }}
           CODEX_HOME: ${{ runner.temp }}/codex-home
@@ -98,13 +99,23 @@ jobs:
           GOOGLE_API_KEY: ""
         run: node scripts/execute-private-task.mjs
       - name: Publish private Draft PR only after successful checks
+        id: publish
         shell: bash
         env:
           TASK_ID: ${{ inputs.task_id }}
           PRIVATE_GAME_WRITE_TOKEN: ${{ secrets.PRIVATE_GAME_WRITE_TOKEN }}
         run: node scripts/publish-private-task.mjs
+      - name: Save execution metadata to private queue (also on failure)
+        if: always()
+        shell: bash
+        env:
+          TASK_ID: ${{ inputs.task_id }}
+          PRIVATE_GAME_WRITE_TOKEN: ${{ secrets.PRIVATE_GAME_WRITE_TOKEN }}
+          ORCHESTRATOR_AUDIT_DIR: ${{ runner.temp }}/private-audit
+          PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
+        run: node scripts/persist-private-audit.mjs
       - name: Remove private checkouts and auth
         if: always()
         shell: bash
         run: |
-          rm -rf task-private private-game "$RUNNER_TEMP/codex-home" "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" .private-task-result.json
+          rm -rf task-private private-game "$RUNNER_TEMP/codex-home" "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" .private-task-result.json .private-task-pr.json "$RUNNER_TEMP/private-audit"
