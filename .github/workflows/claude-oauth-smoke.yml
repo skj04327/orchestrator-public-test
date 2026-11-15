@@ -44,6 +44,15 @@ jobs:
           # Report only numeric HTTP error codes and tightly scoped error categories.
           # Do not print CLI output, stack traces, tokens, or full model response.
           combined = out + "\n" + err
+          print("DIAG: CLI_EXIT_CODE=" + str(status))
+          print("DIAG: STDOUT_JSON=" + str(bool(result)))
+          if result:
+              print("DIAG: RESULT_TYPE=" + str(result.get("type", "missing"))[:32])
+              print("DIAG: RESULT_SUBTYPE=" + str(result.get("subtype", "missing"))[:32])
+              print("DIAG: IS_ERROR=" + str(result.get("is_error", "missing"))[:8])
+              print("DIAG: ERROR_STATUS=" + str(result.get("api_error_status") or result.get("error_status") or "missing")[:12])
+              print("DIAG: TERMINAL_REASON=" + str(result.get("terminal_reason", "missing"))[:32])
+          print("DIAG: STDERR_PRESENT=" + str(bool(err.strip())))
           reported = False
           for code in ("401", "403", "429"):
               if re.search(r"(?<!\d)" + code + r"(?!\d)", combined):
@@ -55,6 +64,19 @@ jobs:
           if re.search(r"rate limit|usage limit|five.hour limit", combined, re.I):
               print("DIAG: RATE_OR_USAGE_LIMIT")
               reported = True
+          patterns = [
+              ("LOGIN_REQUIRED", r"not logged in|please log in|login required"),
+              ("UNAUTHORIZED", r"authentication_failed|unauthorized|invalid.?oauth|oauth.{0,25}invalid"),
+              ("SUBSCRIPTION_LIMIT", r"limit reached|limit exceeded|usage exhausted|capacity limit"),
+              ("API_UNAVAILABLE", r"overloaded|service unavailable|request failed|connection refused"),
+              ("NONINTERACTIVE", r"requires interactive|not a tty|stdin is not a terminal"),
+              ("MODEL_ACCESS", r"model.{0,30}(not found|does not exist|not available|access)"),
+              ("TOKEN_MISSING", r"missing.{0,30}token|token.{0,30}missing"),
+          ]
+          for label, pattern in patterns:
+              if re.search(pattern, combined, re.I):
+                  print("DIAG: " + label)
+                  reported = True
           if not reported:
               print("DIAG: UNCLASSIFIED_CLAUDE_ERROR")
           print("DIAG: CLI exited with non-success; raw output intentionally suppressed")
