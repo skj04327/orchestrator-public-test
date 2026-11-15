@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { readFile, writeFile, lstat } from 'node:fs/promises';
 import { join, relative } from 'node:path';
+import { createHash } from 'node:crypto';
 import { routeTask, createRouteMetadata } from './dynamic-router.mjs';
 import { runPlanner, runReviewer, parseReviewVerdict } from './agent-backends.mjs';
 const cwd=join(process.cwd(),'private-game');
@@ -48,7 +49,8 @@ async function gitDiff(paths){
   const chunks=[];
   for(const path of paths){
     const out=await run('git',['diff','--no-ext-diff','--',path]);
-    const extra=path.startsWith('tests/')?await readFile(join(cwd,path),'utf8'):'';
+    // git diff omits untracked files: include the full new content in independent reviews.
+    const extra=await readFile(join(cwd,path),'utf8');
     chunks.push(path+'\n'+out+'\n'+extra);
   }
   const combined=chunks.join('\n');
@@ -99,6 +101,10 @@ try{
   paths=await changed();
   const diff=await gitDiff(paths);
   stage='review';
+  const fingerprint=async items=>createHash('sha256').update(
+    (await Promise.all(items.map(async p=>p+'\\n'+(await readFile(join(cwd,p),'utf8'))))).join('\\n')
+  ).digest('hex');
+  const beforeReview=await fingerprint(paths);
   safeLog(route.reviewer+' independently reviewing code changes');
   const review=await runReviewer({
     provider:route.reviewer,run,cwd,
@@ -107,6 +113,7 @@ try{
   const verdict=parseReviewVerdict(review);
   if(verdict!=='PASS')throw Error('Independent review rejected task');
   paths=await changed();
+  if((await fingerprint(paths))!==beforeReview)throw Error('Reviewer modified source after validation');
   safeLog(route.reviewer+' independent review PASSED');
   await writeFile(join(process.cwd(),'.private-task-result.json'),JSON.stringify({id,paths,route:createRouteMetadata(route)}));
   safeLog('Validated private change ready for PR publishing');
