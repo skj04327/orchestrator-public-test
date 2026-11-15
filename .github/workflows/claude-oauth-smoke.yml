@@ -20,8 +20,36 @@ jobs:
           fi
           echo "Claude secret present"
       - name: Read-only Claude invocation
+        id: claude
+        continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: "Read README.md and summarize it in one sentence. Do not modify files."
           claude_args: "--max-turns 3 --allowedTools Read,Glob,Grep"
+      - name: Diagnose failed invocation without exposing response or secrets
+        if: steps.claude.outcome == 'failure'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import pathlib, re
+          path = pathlib.Path('/home/runner/work/_temp/claude-execution-output.json')
+          if not path.exists():
+              print('DIAG: No Claude result file found; failure occurred before or outside the model response.')
+          else:
+              data = path.read_text(errors='replace')
+              print('DIAG: Claude result file found.')
+              for label, pattern in [
+                  ('HTTP_401', r'(?<!\d)401(?!\d)|unauthoriz(?:ed|ation)'),
+                  ('HTTP_403', r'(?<!\d)403(?!\d)|forbidden'),
+                  ('HTTP_429', r'(?<!\d)429(?!\d)|rate.?limit|usage.?limit'),
+                  ('TOKEN_EXPIRED', r'token.{0,30}expir|expir.{0,30}token'),
+                  ('AUTH_ERROR', r'authenticat|invalid.?token|oauth'),
+                  ('MODEL_UNAVAILABLE', r'model.{0,30}(unavailable|not found|invalid)'),
+                  ('BILLING_ERROR', r'billing|payment|credit.{0,20}exhaust'),
+              ]:
+                  if re.search(pattern, data, re.I):
+                      print('DIAG: ' + label)
+              print('DIAG: Raw Claude output withheld because this is a public repository.')
+          PY
+          exit 1
