@@ -1,0 +1,79 @@
+name: Private game draft PR smoke test
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: private-game-pr-smoke
+  cancel-in-progress: false
+jobs:
+  create-draft-pr:
+    if: github.actor == 'skj04327' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Create isolated test branch, one documentation file, and draft PR
+        shell: bash
+        env:
+          PRIVATE_GAME_WRITE_TOKEN: ${{ secrets.PRIVATE_GAME_WRITE_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PRIVATE_GAME_WRITE_TOKEN" ]; then
+            echo "::error::PRIVATE_GAME_WRITE_TOKEN secret is missing"
+            exit 1
+          fi
+          python3 - <<'PY'
+          import base64, json, os, sys, urllib.request, urllib.error
+          repo = "skj04327/the-twilight-of-korea"
+          run_id = os.environ["GITHUB_RUN_ID"]
+          branch = "orchestrator/smoke-" + run_id
+          path = "docs/orchestrator/smoke-" + run_id + ".md"
+          token = os.environ["PRIVATE_GAME_WRITE_TOKEN"]
+          api_base = "https://api.github.com/repos/" + repo
+
+          def api(method, route, data=None, expected=(200, 201)):
+              body = json.dumps(data).encode() if data is not None else None
+              req = urllib.request.Request(api_base + route, data=body, method=method, headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": "Bearer " + token,
+                  "X-GitHub-Api-Version": "2022-11-28",
+                  "Content-Type": "application/json",
+                  "User-Agent": "personal-orchestrator-smoke"
+              })
+              try:
+                  with urllib.request.urlopen(req, timeout=25) as resp:
+                      if resp.status not in expected:
+                          raise RuntimeError(f"Unexpected API status {resp.status}")
+                      return json.load(resp)
+              except urllib.error.HTTPError as e:
+                  # Do not print the response body: private repository data stays private.
+                  raise RuntimeError(f"GitHub API {method} {route.split('?')[0]} failed (HTTP {e.code})") from None
+
+          try:
+              head = api("GET", "/git/ref/heads/main")
+              sha = head["object"]["sha"]
+              api("POST", "/git/refs", {"ref": "refs/heads/" + branch, "sha": sha})
+              print("DIAG: TEST_BRANCH_CREATED")
+              text = ("# Orchestrator permissions smoke test\n\n"
+                      "This is an isolated permission test created from a public GitHub Actions runner.\n"
+                      "No game source code has been modified.\n"
+                      "Run ID: " + run_id + "\n")
+              api("PUT", "/contents/" + path, {
+                  "message": "test: verify isolated orchestrator write permission",
+                  "content": base64.b64encode(text.encode()).decode(),
+                  "branch": branch
+              }, expected=(200, 201))
+              print("DIAG: TEST_DOCUMENT_CREATED")
+              pr = api("POST", "/pulls", {
+                  "title": "test: private orchestration draft PR #" + run_id,
+                  "head": branch, "base": "main", "draft": True,
+                  "body": ("Permission-only smoke test. Creates one isolated documentation file. "
+                           "No game source changes, AI execution, deployment, or automatic merging. "
+                           "Safe to close without merging.")
+              })
+              print("RESULT: DRAFT_PR_CREATED")
+              print("RESULT: " + pr["html_url"])
+          except Exception as exc:
+              print("RESULT: FAILED: " + str(exc))
+              sys.exit(1)
+          PY
