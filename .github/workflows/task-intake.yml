@@ -1,0 +1,62 @@
+name: Private task intake from Termux
+on:
+  workflow_dispatch:
+    inputs:
+      task_id:
+        description: "Opaque task ID; never enter private task text here"
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: termux-task-intake
+  cancel-in-progress: false
+jobs:
+  task-intake:
+    if: github.actor == 'skj04327' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate opaque task identifier
+        shell: bash
+        env:
+          TASK_ID: ${{ inputs.task_id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TASK_ID" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9]+$ ]]; then
+            echo "::error::Invalid task ID"
+            exit 1
+          fi
+          echo "RESULT: TASK_ID_VALID"
+      - name: Retrieve task from private repository
+        uses: actions/checkout@v4
+        with:
+          repository: skj04327/the-twilight-of-korea
+          ref: orchestrator/task-queue
+          path: task-private
+          token: ${{ secrets.PRIVATE_GAME_READ_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Confirm private task is readable (never print task contents)
+        shell: bash
+        env:
+          TASK_ID: ${{ inputs.task_id }}
+        run: |
+          set -euo pipefail
+          file="task-private/docs/orchestrator/tasks/$TASK_ID.txt"
+          if [ ! -s "$file" ]; then
+            echo "::error::Private task ID not found"
+            exit 1
+          fi
+          size=$(wc -c < "$file")
+          if [ "$size" -gt 10000 ]; then
+            echo "::error::Task exceeds size limit"
+            exit 1
+          fi
+          echo "RESULT: PRIVATE_TASK_RECEIVED"
+          echo "RESULT: TASK_CONTENT_KEPT_PRIVATE"
+          echo "RESULT: INTAKE_ONLY_NO_CODE_CHANGES"
+      - name: Delete private task checkout
+        if: always()
+        shell: bash
+        run: rm -rf task-private
