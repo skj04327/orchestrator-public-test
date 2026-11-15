@@ -7,6 +7,7 @@ on:
     paths:
       - scripts/audit-ledger*
       - scripts/persist-private-audit*
+      - scripts/retry-policy*
       - scripts/execute-private-task.mjs
       - scripts/publish-private-task.mjs
       - .github/workflows/task-intake.yml
@@ -26,12 +27,12 @@ jobs:
         with:
           node-version: '22'
       - name: Run no-secret deterministic unit tests
-        run: node --test scripts/audit-ledger.test.mjs scripts/persist-private-audit.test.mjs scripts/dynamic-router.test.mjs scripts/agent-backends.test.mjs
+        run: node --test scripts/audit-ledger.test.mjs scripts/persist-private-audit.test.mjs scripts/retry-policy.test.mjs scripts/dynamic-router.test.mjs scripts/agent-backends.test.mjs
       - name: Syntax and CLI checks
         shell: bash
         run: |
           set -euo pipefail
-          for file in scripts/audit-ledger.mjs scripts/persist-private-audit.mjs scripts/execute-private-task.mjs scripts/publish-private-task.mjs; do
+          for file in scripts/audit-ledger.mjs scripts/persist-private-audit.mjs scripts/retry-policy.mjs scripts/execute-private-task.mjs scripts/publish-private-task.mjs; do
             node --check "$file"
           done
           bash -n termux/ai
