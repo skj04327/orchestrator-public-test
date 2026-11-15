@@ -1,0 +1,53 @@
+name: Antigravity Google AI Pro smoke test
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  agy-test:
+    if: github.actor == 'skj04327'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Restore Google subscription credential privately
+        shell: bash
+        env:
+          OAUTH_B64: ${{ secrets.ANTIGRAVITY_OAUTH_B64 }}
+        run: |
+          set -euo pipefail
+          test -n "$OAUTH_B64" || { echo "::error::Missing ANTIGRAVITY_OAUTH_B64"; exit 1; }
+          install -d -m 700 "$HOME/.gemini/antigravity-cli"
+          (umask 077; printf '%s' "$OAUTH_B64" | base64 -d > "$HOME/.gemini/antigravity-cli/antigravity-oauth-token")
+          test -s "$HOME/.gemini/antigravity-cli/antigravity-oauth-token"
+          echo "DIAG: CREDENTIAL_FILE_PRESENT"
+      - name: Install official Antigravity CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://antigravity.google/cli/install.sh | bash >/dev/null
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Test subscription execution (do not print response)
+        shell: bash
+        env:
+          GEMINI_API_KEY: ""
+          GOOGLE_API_KEY: ""
+        run: |
+          set -uo pipefail
+          set +e
+          timeout 180s agy -p "Reply with exactly OK. Do not modify any files." > "$RUNNER_TEMP/agy-output.txt" 2> "$RUNNER_TEMP/agy-error.txt"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ] && grep -Eiq '^ *OK[.!]? *$' "$RUNNER_TEMP/agy-output.txt"; then
+            echo "DIAG: ANTIGRAVITY_SUBSCRIPTION_SUCCESS"
+          else
+            echo "DIAG: ANTIGRAVITY_TEST_FAILED"
+            echo "DIAG: EXIT_CODE=$rc"
+            echo "DIAG: OUTPUT_PRESENT=$([ -s "$RUNNER_TEMP/agy-output.txt" ] && echo true || echo false)"
+            echo "DIAG: STDERR_PRESENT=$([ -s "$RUNNER_TEMP/agy-error.txt" ] && echo true || echo false)"
+            echo "DIAG: Raw output withheld because this is a public repository"
+            exit 1
+          fi
+      - name: Delete credential
+        if: always()
+        shell: bash
+        run: rm -f "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" "$RUNNER_TEMP/agy-output.txt" "$RUNNER_TEMP/agy-error.txt"
