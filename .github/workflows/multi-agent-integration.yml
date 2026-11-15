@@ -1,0 +1,67 @@
+name: Multi-agent orchestration integration
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "PUBLIC, NON-SENSITIVE sample task only; never enter private game details"
+        required: false
+        default: "Design a pure JavaScript function isPalindrome(text) with three test cases."
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: public-orchestration-integration
+  cancel-in-progress: false
+jobs:
+  integration:
+    if: github.actor == 'skj04327'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify credentials and restore Codex + Antigravity credentials
+        shell: bash
+        env:
+          CODEX_B64: ${{ secrets.CODEX_AUTH_JSON_B64 }}
+          AGY_B64: ${{ secrets.ANTIGRAVITY_OAUTH_B64 }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          for name in CODEX_B64 AGY_B64 CLAUDE_CODE_OAUTH_TOKEN; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required subscription credential: $name"
+              exit 1
+            fi
+          done
+          install -d -m 700 "$RUNNER_TEMP/codex-home" "$HOME/.gemini/antigravity-cli"
+          (umask 077; printf '%s' "$CODEX_B64" | base64 -d > "$RUNNER_TEMP/codex-home/auth.json")
+          (umask 077; printf '%s' "$AGY_B64" | base64 -d > "$HOME/.gemini/antigravity-cli/antigravity-oauth-token")
+          test -s "$RUNNER_TEMP/codex-home/auth.json"
+          test -s "$HOME/.gemini/antigravity-cli/antigravity-oauth-token"
+          echo "SUBSCRIPTION_CREDENTIALS_READY (contents withheld)"
+      - name: Install official model CLIs
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://claude.ai/install.sh | bash >/dev/null
+          curl -fsSL https://antigravity.google/cli/install.sh | bash >/dev/null
+          npm install -g @openai/codex >/dev/null
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Execute real three-agent integration
+        shell: bash
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ORCHESTRATOR_TASK: ${{ inputs.task }}
+          OPENAI_API_KEY: ""
+          ANTHROPIC_API_KEY: ""
+          GOOGLE_API_KEY: ""
+          GEMINI_API_KEY: ""
+        run: |
+          node scripts/orchestrator.mjs
+      - name: Remove sensitive session files
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$RUNNER_TEMP/codex-home"
+          rm -f "$HOME/.gemini/antigravity-cli/antigravity-oauth-token"
