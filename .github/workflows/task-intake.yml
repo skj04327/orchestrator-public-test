@@ -6,6 +6,18 @@ on:
         description: "Opaque private task ID (never enter task text)"
         required: true
         type: string
+      routing_mode:
+        description: "Routing mode: auto, stable, or manual"
+        required: false
+        type: choice
+        options: [auto, stable, manual]
+        default: auto
+      controller:
+        description: "Control tower provider (only used in manual mode)"
+        required: false
+        type: choice
+        options: [auto, claude, gemini, codex]
+        default: auto
 permissions:
   contents: read
 concurrency:
@@ -76,6 +88,8 @@ jobs:
         shell: bash
         env:
           TASK_ID: ${{ inputs.task_id }}
+          ORCHESTRATOR_ROUTING_MODE: ${{ inputs.routing_mode }}
+          ORCHESTRATOR_CONTROLLER: ${{ inputs.controller }}
           CODEX_HOME: ${{ runner.temp }}/codex-home
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           ANTHROPIC_API_KEY: ""
