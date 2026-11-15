@@ -1,0 +1,38 @@
+name: Offline orchestrator end-to-end contract (NO secrets)
+on:
+  push:
+    branches: [feature/offline-e2e-harness-v1]
+  pull_request:
+    paths:
+      - scripts/orchestrator-offline-e2e.test.mjs
+      - scripts/test-fixtures/**
+      - scripts/execute-private-task.mjs
+      - scripts/publish-private-task.mjs
+      - scripts/persist-private-audit.mjs
+      - .github/workflows/ci-offline-e2e.yml
+permissions:
+  contents: read
+jobs:
+  public-fixture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify test scripts parse
+        run: |
+          node --check scripts/orchestrator-offline-e2e.test.mjs
+          node --check scripts/test-fixtures/mock-cli.mjs
+          node --check scripts/test-fixtures/mock-fetch.mjs
+      - name: Test actual orchestration and publisher against temporary synthetic fixtures
+        env:
+          ANTHROPIC_API_KEY: ""
+          OPENAI_API_KEY: ""
+          GEMINI_API_KEY: ""
+          GOOGLE_API_KEY: ""
+          CLAUDE_CODE_OAUTH_TOKEN: ""
+        run: node --test scripts/orchestrator-offline-e2e.test.mjs
