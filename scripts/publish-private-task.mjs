@@ -1,4 +1,5 @@
-import { readFile, writeFile, lstat } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
+import { collectVerifiedFiles, isVerifiedDigest } from './verified-manifest.mjs';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 const cwd=join(process.cwd(),'private-game');
@@ -38,22 +39,26 @@ try {
   const statusLines=porcelain.split('\n').filter(Boolean);
   const modified=statusLines.map(x=>x.slice(3));
   if(modified.length!==seen.size||modified.some(p=>!seen.has(p)))throw Error('Checkout changed after verification');
+  if(!isVerifiedDigest(report.verifiedContentSha256))throw Error('Missing validated content fingerprint');
+  const verified=await collectVerifiedFiles(cwd,report.paths);
+  if(verified.digest!==report.verifiedContentSha256)throw Error('Source changed after review: refusing unverified PR');
+  // Publish these captured exact bytes; never re-read files after validation.
+  const verifiedBytes=new Map(verified.files.map(f=>[f.path,f.content]));
   const localHead=await git(['rev-parse','HEAD']);
   const main=await api('GET','/git/ref/heads/main');
   if(main.object.sha!==localHead)throw Error('Main moved since validation: refusing stale PR');
   const branch='orchestrator/task-'+id;
   await api('POST','/git/refs',{ref:'refs/heads/'+branch,sha:localHead});
   for(const path of report.paths) {
-    const stat=await lstat(join(cwd,path));
-    if(!stat.isFile()||stat.isSymbolicLink()||stat.size>65000)throw Error('Unsafe file');
-    const content=(await readFile(join(cwd,path),'utf8'));
+    const content=verifiedBytes.get(path);
+    if(!Buffer.isBuffer(content))throw Error('Manifest file missing from verified snapshot');
     const existing=await fetch('https://api.github.com/repos/skj04327/the-twilight-of-korea/contents/'+path+'?ref='+encodeURIComponent(branch),{
       headers:{Authorization:'Bearer '+token,Accept:'application/vnd.github+json',
         'X-GitHub-Api-Version':'2022-11-28'}
     });
     if(existing.status!==200&&existing.status!==404)throw Error('Cannot inspect destination file');
     const old=existing.status===200?await existing.json():null;
-    const request={message:'feat: AI-assisted task '+id,branch,content:Buffer.from(content).toString('base64')};
+    const request={message:'feat: AI-assisted task '+id,branch,content:content.toString('base64')};
     if(old)request.sha=old.sha;
     await api('PUT','/contents/'+path.split('/').map(encodeURIComponent).join('/'),request);
   }
