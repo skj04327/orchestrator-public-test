@@ -1,0 +1,71 @@
+name: Real TypeScript code change and draft PR
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: private-game-code-smoke
+  cancel-in-progress: false
+jobs:
+  ai-code-smoke:
+    if: github.actor == 'skj04327' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout public orchestrator
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout private game main read-only
+        uses: actions/checkout@v4
+        with:
+          repository: skj04327/the-twilight-of-korea
+          ref: main
+          path: private-game
+          token: ${{ secrets.PRIVATE_GAME_READ_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Prepare Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Restore existing subscription credentials
+        shell: bash
+        env:
+          CODEX_B64: ${{ secrets.CODEX_AUTH_JSON_B64 }}
+          AGY_B64: ${{ secrets.ANTIGRAVITY_OAUTH_B64 }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          PRIVATE_GAME_WRITE_TOKEN: ${{ secrets.PRIVATE_GAME_WRITE_TOKEN }}
+        run: |
+          set -euo pipefail
+          for name in CODEX_B64 AGY_B64 CLAUDE_CODE_OAUTH_TOKEN PRIVATE_GAME_WRITE_TOKEN; do
+            if [ -z "${!name}" ]; then echo "::error::Missing credential $name"; exit 1; fi
+          done
+          install -d -m 700 "$RUNNER_TEMP/codex-home" "$HOME/.gemini/antigravity-cli"
+          (umask 077; printf '%s' "$CODEX_B64" | base64 -d > "$RUNNER_TEMP/codex-home/auth.json")
+          (umask 077; printf '%s' "$AGY_B64" | base64 -d > "$HOME/.gemini/antigravity-cli/antigravity-oauth-token")
+          echo "Credentials available (values withheld)"
+      - name: Install subscription-backed AI CLIs
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://claude.ai/install.sh | bash >/dev/null
+          curl -fsSL https://antigravity.google/cli/install.sh | bash >/dev/null
+          npm install -g @openai/codex >/dev/null
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Generate code, validate, independently review and draft PR
+        shell: bash
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+          PRIVATE_GAME_WRITE_TOKEN: ${{ secrets.PRIVATE_GAME_WRITE_TOKEN }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ""
+          OPENAI_API_KEY: ""
+          GEMINI_API_KEY: ""
+          GOOGLE_API_KEY: ""
+        run: node scripts/private-game-code-smoke.mjs
+      - name: Delete credentials and private checkout
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$RUNNER_TEMP/codex-home" "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" private-game
