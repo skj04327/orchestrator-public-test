@@ -6,6 +6,7 @@ import { routeTask, createRouteMetadata } from './dynamic-router.mjs';
 import { runPlanner, runReviewer, parseReviewVerdict } from './agent-backends.mjs';
 import { createAuditLedger, writePrivateAuditReport } from './audit-ledger.mjs';
 import { shouldAttemptRepair } from './retry-policy.mjs';
+import { plannerContract, parseWorkplan, assertExecutableWorkplan, makeCodePrompt } from './workpack-planner.mjs';
 const cwd=join(process.cwd(),'private-game');
 const id=process.env.TASK_ID;
 if (!/^[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9]+$/.test(id||'')) throw Error('Invalid task ID');
@@ -65,16 +66,16 @@ function run(bin,args,opts={}) {
     });
   });
 }
-async function observed(stage,actor,operation){
+async function observed(stage,actor,operation,metadata={}){
   const began=Date.now();
-  ledger.record({stage,actor,status:'started'});
+  ledger.record({stage,actor,status:'started',workpackId:metadata.workpackId??null});
   try{
     const result=await operation();
-    ledger.record({stage,actor,status:'passed',durationMs:Date.now()-began,
+    ledger.record({stage,actor,status:'passed',workpackId:metadata.workpackId??null,durationMs:Date.now()-began,
       verdict:stage==='review'?'PASS':null});
     return result;
   }catch(e){
-    ledger.record({stage,actor,status:'failed',durationMs:Date.now()-began,
+    ledger.record({stage,actor,status:'failed',workpackId:metadata.workpackId??null,durationMs:Date.now()-began,
       failureKind:e.failureKind||'operation_failed',verdict:stage==='review'?'FAIL':null});
     throw e;
   }
@@ -114,23 +115,38 @@ try{
   safeLog('Install existing project dependencies');
   await observed('intake','system',()=>run('npm',['ci','--no-audit','--no-fund'],{timeout:360000}));
   const sourceRules='Read-only initial repo baseline. Respect current branch, existing feature owners, and project directions. Never edit existing tests, workflow, package files, docs, lock files, git config, or assets. Only modify src/**/*.ts or src/**/*.tsx and ADD new tests/**/*.test.ts. Do not run git commands that commit or push. Do not install dependencies. No file deletion. No deployment or API spending. Keep changes small and relevant.';
-  safeLog('Control tower '+route.controller+' planning private task');
-  const planResult={result:await observed('plan',route.controller,()=>runPlanner({
+  stage='planning';
+  safeLog('Control tower '+route.controller+' decomposing private task');
+  const planText=await observed('plan',route.controller,()=>runPlanner({
     provider:route.controller,run,cwd,
-    prompt:'Plan this task on the actual repository. '+sourceRules+' Output a concise 4-10 step implementation plan including relevant files; do not modify files. TASK:\\n'+task
-  }))};
-  if(planResult.result.length>10000)throw Error('Control tower plan too long');
-  if((await run('git',['status','--porcelain','--untracked-files=all'])).trim())throw Error('Planning unexpectedly modified repository');
+    prompt:plannerContract(task)+'\\nPlanning is read-only; inspect actual code. Task:\\n'+task
+  }));
+  if((await run('git',['status','--porcelain','--untracked-files=all'])).trim())
+    throw Error('Planning unexpectedly modified repository');
+  // The model cannot authorize a new CLI or asset generator: use deterministic validation.
+  const workplan=parseWorkplan(planText,task);
+  safeLog('WORKPACKS CODE='+workplan.codeCount+' IMAGE='+workplan.imageCount);
+  if(workplan.imageCount) {
+    ledger.record({stage:'implementation',actor:'system',status:'failed',failureKind:'blocked_capability'});
+    safeLog('BLOCKED: IMAGE_BACKEND_NOT_CONFIGURED');
+  }
+  assertExecutableWorkplan(workplan);
   stage='coding';
-  safeLog('Codex implementing private task on isolated checkout');
-  const codingPrompt=['You are implementing a requested feature for a private game repository.',
-    sourceRules,'Write actual code and add appropriate new tests where feasible.',
-    'Do not output credentials, private source text, or user task to terminal logs.',
-    'Task: '+task,'Claude implementation guidance: '+planResult.result,
-    'Finish only when changes are saved to files, not merely described.'].join('\n');
-  await observed('implementation','codex',()=>run('codex',['exec','--sandbox','workspace-write',codingPrompt],{timeout:660000}));
+  const codePacks=workplan.workpacks.filter(p=>p.kind==='code');
+  for(let i=0;i<codePacks.length;i++) {
+    const pack=codePacks[i];
+    safeLog('Codex workpack '+pack.id+' of '+codePacks.length);
+    await observed('implementation','codex',()=>run('codex',[
+      'exec','--sandbox','workspace-write',
+      makeCodePrompt({task,workpack:pack,index:i+1,total:codePacks.length,sourceRules})
+    ],{timeout:240000}),{workpackId:pack.id});
+    // Detect disallowed changes as soon as a workpack returns; do not allow
+    // later workers to repair or bury unsafe changes.
+    const currentPaths=await changed();
+    safeLog('Workpack '+pack.id+' saved; safe changed files='+currentPaths.length);
+  }
   let paths=await changed();
-  safeLog('Modified paths validated ('+paths.length+' files)');
+  safeLog('Modified paths validated ('+paths.length+' total files)');
   stage='validation';
   const stageByName={'TypeScript':'typecheck','Unit tests':'unit-test','Production build':'build'};
   const checks=[['TypeScript','npm',['run','typecheck']],['Unit tests','npm',['test','--','--reporter=dot']],['Production build','npm',['run','build']]];
@@ -175,7 +191,7 @@ try{
   await observed('review',route.reviewer,async()=>{
     const review=await runReviewer({
     provider:route.reviewer,run,cwd,
-    prompt:'You are a strict independent code reviewer. Evaluate adherence to the task, regression risk, obvious security problems, and whether tests appear meaningful. First line EXACTLY PASS or FAIL. Then brief reason. Do not edit any files. TASK:\\n'+task+'\\nCONTROL TOWER PLAN:\\n'+planResult.result+'\\nPATCH:\\n'+diff
+    prompt:'You are a strict independent code reviewer. Evaluate adherence to the task, regression risk, obvious security problems, and whether tests appear meaningful. First line EXACTLY PASS or FAIL. Then brief reason. Do not edit any files. TASK:\\n'+task+'\\nCONTROL TOWER WORKPACKS:\\n'+JSON.stringify(workplan.workpacks)+'\\nPATCH:\\n'+diff
     });
     if(parseReviewVerdict(review)!=='PASS')throw Error('Independent review rejected task');
   });
