@@ -13,7 +13,7 @@ jobs:
         run: |
           curl -fsSL https://claude.ai/install.sh | bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Test Claude subscription without revealing output
+      - name: Test Claude subscription and classify API failure safely
         shell: bash
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -24,61 +24,61 @@ jobs:
             exit 1
           fi
           set +e
-          claude -p "Reply with exactly OK." --output-format json --max-turns 1 > "$RUNNER_TEMP/claude-result.json" 2> "$RUNNER_TEMP/claude-stderr.txt"
+          claude -p "Reply with exactly OK." --output-format stream-json --verbose --max-turns 1 > "$RUNNER_TEMP/claude-events.jsonl" 2> "$RUNNER_TEMP/claude-stderr.txt"
           rc=$?
           set -e
           CLAUDE_RC="$rc" python3 - <<'PY'
           import json, os, pathlib, re, sys
-          p = pathlib.Path(os.environ["RUNNER_TEMP"])
-          out = (p/"claude-result.json").read_text(errors="replace")[:200000]
-          err = (p/"claude-stderr.txt").read_text(errors="replace")[:200000]
-          status = int(os.environ["CLAUDE_RC"])
-          try:
-              result = json.loads(out)
-          except Exception:
-              result = {}
-          success = status == 0 and result.get("is_error") is False and result.get("type") == "result"
+          tmp = pathlib.Path(os.environ["RUNNER_TEMP"])
+          raw = (tmp/"claude-events.jsonl").read_text(errors="replace")[:300000]
+          err = (tmp/"claude-stderr.txt").read_text(errors="replace")[:100000]
+          events = []
+          for line in raw.splitlines()[:1000]:
+              try:
+                  obj = json.loads(line)
+                  if isinstance(obj, dict):
+                      events.append(obj)
+              except (ValueError, TypeError):
+                  pass
+          results = [e for e in events if e.get("type") == "result"]
+          result = results[-1] if results else {}
+          success = (int(os.environ["CLAUDE_RC"]) == 0 and result.get("is_error") is False)
           if success:
               print("DIAG: CLAUDE_SUBSCRIPTION_AUTH_SUCCESS")
               sys.exit(0)
-          # Report only numeric HTTP error codes and tightly scoped error categories.
-          # Do not print CLI output, stack traces, tokens, or full model response.
-          combined = out + "\n" + err
-          print("DIAG: CLI_EXIT_CODE=" + str(status))
-          print("DIAG: STDOUT_JSON=" + str(bool(result)))
-          if result:
-              print("DIAG: RESULT_TYPE=" + str(result.get("type", "missing"))[:32])
-              print("DIAG: RESULT_SUBTYPE=" + str(result.get("subtype", "missing"))[:32])
-              print("DIAG: IS_ERROR=" + str(result.get("is_error", "missing"))[:8])
-              print("DIAG: ERROR_STATUS=" + str(result.get("api_error_status") or result.get("error_status") or "missing")[:12])
-              print("DIAG: TERMINAL_REASON=" + str(result.get("terminal_reason", "missing"))[:32])
-          print("DIAG: STDERR_PRESENT=" + str(bool(err.strip())))
-          reported = False
-          for code in ("401", "403", "429"):
-              if re.search(r"(?<!\d)" + code + r"(?!\d)", combined):
-                  print("DIAG: HTTP_" + code)
-                  reported = True
-          if re.search(r"OAuth access token (?:is invalid|has been revoked|expired)", combined, re.I):
-              print("DIAG: OAUTH_TOKEN_REJECTED")
-              reported = True
-          if re.search(r"rate limit|usage limit|five.hour limit", combined, re.I):
-              print("DIAG: RATE_OR_USAGE_LIMIT")
-              reported = True
-          patterns = [
+          print("DIAG: CLI_EXIT_CODE=" + str(os.environ["CLAUDE_RC"]))
+          print("DIAG: TERMINAL_REASON=" + str(result.get("terminal_reason") or "missing")[:32])
+          print("DIAG: RESULT_RECEIVED=" + str(bool(result)))
+          # Analyze captured stream privately. Only fixed, predefined codes are printed.
+          status_values = []
+          for e in events:
+              objects = [e, e.get("message")]
+              for obj in objects:
+                  if not isinstance(obj, dict):
+                      continue
+                  for name in ("api_error_status", "error_status", "status"):
+                      v = obj.get(name)
+                      if str(v) in ("400", "401", "403", "404", "429", "500", "502", "503"):
+                          status_values.append(str(v))
+          combined = raw + "\n" + err
+          for code in ("400", "401", "403", "404", "429", "500", "502", "503"):
+              if re.search(r"(?:API Error:|HTTP|status[:= ]+)\\s*" + code + r"(?!\\d)", combined, re.I):
+                  status_values.append(code)
+          status_values = list(dict.fromkeys(status_values))
+          if status_values:
+              print("DIAG: API_HTTP_STATUS=" + ",".join(status_values))
+          labels = [
+              ("OAUTH_TOKEN_INVALID", r"oauth access token is invalid|invalid oauth token|authentication_failed"),
               ("LOGIN_REQUIRED", r"not logged in|please log in|login required"),
-              ("UNAUTHORIZED", r"authentication_failed|unauthorized|invalid.?oauth|oauth.{0,25}invalid"),
-              ("SUBSCRIPTION_LIMIT", r"limit reached|limit exceeded|usage exhausted|capacity limit"),
-              ("API_UNAVAILABLE", r"overloaded|service unavailable|request failed|connection refused"),
-              ("NONINTERACTIVE", r"requires interactive|not a tty|stdin is not a terminal"),
-              ("MODEL_ACCESS", r"model.{0,30}(not found|does not exist|not available|access)"),
-              ("TOKEN_MISSING", r"missing.{0,30}token|token.{0,30}missing"),
+              ("SUBSCRIPTION_OR_RATE_LIMIT", r"rate limit|usage limit|limit reached|limit exceeded|usage exhausted"),
+              ("MODEL_UNAVAILABLE", r"model.{0,30}(not found|does not exist|not available|access denied)"),
+              ("SERVICE_UNAVAILABLE", r"overloaded|service unavailable|connection refused|network error"),
           ]
-          for label, pattern in patterns:
-              if re.search(pattern, combined, re.I):
-                  print("DIAG: " + label)
-                  reported = True
-          if not reported:
-              print("DIAG: UNCLASSIFIED_CLAUDE_ERROR")
-          print("DIAG: CLI exited with non-success; raw output intentionally suppressed")
+          matches = [label for label, pat in labels if re.search(pat, combined, re.I)]
+          for match in matches:
+              print("DIAG: " + match)
+          if not status_values and not matches:
+              print("DIAG: UNCLASSIFIED_API_FAILURE")
+          print("DIAG: Raw Claude response and credentials suppressed in public logs")
           sys.exit(1)
           PY
