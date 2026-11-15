@@ -60,7 +60,7 @@ try {
   const pr=await api('POST','/pulls',{
     title:'AI task '+id,
     head:branch,base:'main',draft:true,
-    body:'Private Termux task '+id+'; Claude planning, Codex implementation, Gemini independent review. npm typecheck, unit tests and production build passed. Changed paths: '+report.paths.map(x=>'\`'+x+'\`').join(', ')+'. Human review required. No automatic merge.'
+    body:'Private Termux task '+id+'; control tower: '+(report.route?.controller??'claude')+', developer: Codex, independent reviewer: '+(report.route?.reviewer??'gemini')+'. npm typecheck, unit tests and production build passed. Changed paths: '+report.paths.map(x=>'\`'+x+'\`').join(', ')+'. Human review required. No automatic merge.'
   });
   console.log('RESULT: DRAFT_PR_CREATED '+pr.html_url);
 }catch(e){
