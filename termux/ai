@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+PUBLIC_REPO="skj04327/orchestrator-public-test"
+PRIVATE_REPO="skj04327/the-twilight-of-korea"
+QUEUE_BRANCH="orchestrator/task-queue"
+WORKFLOW="task-intake.yml"
+
+usage() {
+  printf 'Usage: ai "task instruction" | ai status | ai logs\n' >&2
+  exit 2
+}
+command -v gh >/dev/null || { echo "GitHub CLI (gh) is required" >&2; exit 1; }
+case "${1:-}" in
+  status)
+    gh run list -R "$PUBLIC_REPO" --workflow "$WORKFLOW" --limit 8
+    exit
+    ;;
+  logs)
+    id="$(gh run list -R "$PUBLIC_REPO" --workflow "$WORKFLOW" --limit 1 --json databaseId --jq '.[0].databaseId')"
+    [ -n "$id" ] && [ "$id" != "null" ] || { echo "No workflow runs"; exit 1; }
+    gh run view "$id" -R "$PUBLIC_REPO" --log
+    exit
+    ;;
+esac
+[ "$#" -eq 1 ] || usage
+task="$1"
+[ -n "${task//[[:space:]]/}" ] || usage
+[ "${#task}" -le 2500 ] || { echo "Task too long (max 2500 characters)" >&2; exit 2; }
+account="$(gh api user --jq '.login')"
+[ "$account" = "skj04327" ] || { echo "Sign in to GitHub as skj04327 first" >&2; exit 1; }
+id="$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM-$RANDOM"
+path="docs/orchestrator/tasks/$id.txt"
+content="$(printf '%s' "$task" | base64 | tr -d '\r\n')"
+gh api -X PUT "repos/$PRIVATE_REPO/contents/$path" \
+  -f message="queue: add private orchestration request $id" \
+  -f branch="$QUEUE_BRANCH" -f content="$content" --silent
+if gh workflow run "$WORKFLOW" -R "$PUBLIC_REPO" -f task_id="$id"; then
+  printf 'Queued privately. Task ID: %s\n' "$id"
+  printf 'Status: ai status\n'
+else
+  printf 'The task was saved privately but could not dispatch Actions. Task ID: %s\n' "$id" >&2
+  exit 1
+fi
