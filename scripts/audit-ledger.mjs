@@ -10,7 +10,7 @@ const STATUS=new Set(['started','passed','failed','skipped']);
 const ROLES=new Set(['claude','codex','gemini','system']);
 const VERDICTS=new Set(['PASS','FAIL','UNKNOWN']);
 const MAX_EVENTS=100;
-const FAILURE_KINDS=new Set(['nonzero_exit','timeout','output_limit','spawn_error','signal','operation_failed']);
+const FAILURE_KINDS=new Set(['nonzero_exit','timeout','output_limit','spawn_error','signal','operation_failed','blocked_capability']);
 const str=(value,max=100)=>typeof value==='string'&&value.length>0&&value.length<=max;
 const unsigned=(n)=>Number.isSafeInteger(n)&&n>=0;
 
@@ -33,6 +33,7 @@ export function normalizeAuditEvent(event, now=new Date().toISOString()){
   ))throw Error('Invalid token usage');
   if(event.verdict!=null&&!VERDICTS.has(event.verdict))throw Error('Invalid verdict');
   if(event.failureKind!=null&&!FAILURE_KINDS.has(event.failureKind))throw Error('Invalid failure classification');
+  if(event.workpackId!=null&&!/^P[1-4]$/.test(event.workpackId))throw Error('Invalid workpack ID');
   return {
     timestamp:now,
     stage:event.stage,
@@ -46,7 +47,8 @@ export function normalizeAuditEvent(event, now=new Date().toISOString()){
       output:event.tokenUsage.output
     },
     verdict:event.verdict??null,
-    failureKind:event.failureKind??null
+    failureKind:event.failureKind??null,
+    workpackId:event.workpackId??null
   };
 }
 export function createAuditLedger(taskId,{startedAt=new Date().toISOString()}={}){
