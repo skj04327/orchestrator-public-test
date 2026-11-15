@@ -62,7 +62,7 @@ jobs:
                           status_values.append(str(v))
           combined = raw + "\n" + err
           for code in ("400", "401", "403", "404", "429", "500", "502", "503"):
-              if re.search(r"(?:API Error:|HTTP|status[:= ]+)\\s*" + code + r"(?!\\d)", combined, re.I):
+              if re.search(r"(?:API Error:|HTTP|status[:= ]+)\s*" + code + r"(?!\d)", combined, re.I):
                   status_values.append(code)
           status_values = list(dict.fromkeys(status_values))
           if status_values:
