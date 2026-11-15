@@ -77,11 +77,25 @@ try {
     const codexReview = (await readFile(reviewPath, 'utf8')).trim();
     const geminiReview = (await cli('agy', ['-p', reviewPrompt])).trim();
     const verdict = x => x.split(/\r?\n/)[0].trim().toUpperCase().replace(/[^A-Z]/g,'');
-    if (verdict(codexReview) === 'PASS' && verdict(geminiReview) === 'PASS') {
+    const codexVerdict = verdict(codexReview);
+    const geminiVerdict = verdict(geminiReview);
+    // Publish only fixed vocabulary; reviewer comments and private game details stay private.
+    const classifications = [
+      ['MISSING_EVIDENCE', /lack.{0,35}(citation|source|evidence|reference)|unsupported|no evidence|근거.{0,15}(없|부족)/i],
+      ['OVERCLAIMED_COMPLETION', /claim.{0,40}(implemented|completed|tested)|not actually (implemented|tested)|완료.{0,20}(주장|검증)/i],
+      ['VAGUE_PROPOSAL', /vague|generic|not specific|구체적.{0,15}부족|모호/i],
+      ['FORMAT_PROBLEM', /format|markdown|heading|형식|제목/i],
+      ['SECURITY_CONCERN', /secret|credential|token|보안|민감/i],
+      ['TEST_GAP', /edge case|test coverage|테스트.{0,20}부족/i]
+    ];
+    const diagnose = review => classifications.filter(([, re]) => re.test(review)).map(([label]) => label).slice(0, 3).join(',') || 'UNCLASSIFIED';
+    safeLog('Codex reviewer: ' + (['PASS','FAIL'].includes(codexVerdict) ? codexVerdict : 'INVALID') + (codexVerdict === 'FAIL' ? ' [' + diagnose(codexReview) + ']' : ''));
+    safeLog('Gemini reviewer: ' + (['PASS','FAIL'].includes(geminiVerdict) ? geminiVerdict : 'INVALID') + (geminiVerdict === 'FAIL' ? ' [' + diagnose(geminiReview) + ']' : ''));
+    if (codexVerdict === 'PASS' && geminiVerdict === 'PASS') {
       verified = true;
       break;
     }
-    if (![verdict(codexReview), verdict(geminiReview)].every(v => ['PASS','FAIL'].includes(v))) throw Error('Reviewer returned ambiguous verdict');
+    if (![codexVerdict, geminiVerdict].every(v => ['PASS','FAIL'].includes(v))) throw Error('Reviewer returned ambiguous verdict');
     if (attempt === 3) break;
     safeLog('Review requested improvement');
     const corrected = await cli('claude', ['-p', 'Revise the markdown below in response to two reviewers; output only complete corrected markdown beginning with # . Do not modify files.\nDOC:\n' + document + '\nREVIEW1:\n' + codexReview.slice(0,1800) + '\nREVIEW2:\n' + geminiReview.slice(0,1800), '--output-format','json','--max-turns','1']);
