@@ -6,7 +6,7 @@ QUEUE_BRANCH="orchestrator/task-queue"
 WORKFLOW="task-intake.yml"
 
 usage() {
-  printf 'Usage: ai "task instruction" | ai status | ai logs\n' >&2
+  printf 'Usage: ai "task instruction" | ai --stable "task" | ai --controller gemini "task" | ai status | ai logs\n' >&2
   exit 2
 }
 command -v gh >/dev/null || { echo "GitHub CLI (gh) is required" >&2; exit 1; }
@@ -22,6 +22,23 @@ case "${1:-}" in
     exit
     ;;
 esac
+mode="auto"
+controller="auto"
+case "${1:-}" in
+  --stable)
+    mode="stable"
+    shift
+    ;;
+  --controller)
+    [ "$#" -eq 3 ] || usage
+    case "$2" in
+      claude|codex|gemini) controller="$2" ;;
+      *) echo "Controller must be claude, codex, or gemini" >&2; exit 2 ;;
+    esac
+    mode="manual"
+    shift 2
+    ;;
+esac
 [ "$#" -eq 1 ] || usage
 task="$1"
 [ -n "${task//[[:space:]]/}" ] || usage
@@ -34,7 +51,7 @@ content="$(printf '%s' "$task" | base64 | tr -d '\r\n')"
 gh api -X PUT "repos/$PRIVATE_REPO/contents/$path" \
   -f message="queue: add private orchestration request $id" \
   -f branch="$QUEUE_BRANCH" -f content="$content" --silent
-if gh workflow run "$WORKFLOW" -R "$PUBLIC_REPO" -f task_id="$id"; then
+if gh workflow run "$WORKFLOW" -R "$PUBLIC_REPO" -f task_id="$id" -f routing_mode="$mode" -f controller="$controller"; then
   printf 'Queued privately. Task ID: %s\n' "$id"
   printf 'Status: ai status\n'
 else

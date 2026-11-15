@@ -1,0 +1,36 @@
+name: Test dynamic router (public metadata only)
+on:
+  push:
+    branches:
+      - feature/dynamic-control-tower-v1
+  pull_request:
+    paths:
+      - scripts/dynamic-router*
+      - scripts/agent-backends*
+      - scripts/execute-private-task.mjs
+      - termux/ai
+      - .github/workflows/ci-router.yml
+permissions:
+  contents: read
+jobs:
+  test-router:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Test provider selection and adapters (without secrets)
+        run: node --test scripts/dynamic-router.test.mjs scripts/agent-backends.test.mjs
+      - name: Check JavaScript syntax and Termux script
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check scripts/dynamic-router.mjs
+          node --check scripts/agent-backends.mjs
+          node --check scripts/execute-private-task.mjs
+          node --check scripts/publish-private-task.mjs
+          bash -n termux/ai
