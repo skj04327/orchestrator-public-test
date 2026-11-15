@@ -1,0 +1,43 @@
+name: Private game repository read-only bridge
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify-private-access:
+    if: github.actor == 'skj04327'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require minimal private repo credential
+        env:
+          PRIVATE_GAME_READ_TOKEN: ${{ secrets.PRIVATE_GAME_READ_TOKEN }}
+        shell: bash
+        run: |
+          if [ -z "$PRIVATE_GAME_READ_TOKEN" ]; then
+            echo "::error::PRIVATE_GAME_READ_TOKEN is not configured"
+            exit 1
+          fi
+          echo "DIAG: READ_TOKEN_PRESENT"
+      - name: Checkout private game (read only, no credential persistence)
+        uses: actions/checkout@v4
+        with:
+          repository: skj04327/the-twilight-of-korea
+          ref: main
+          path: game-private
+          token: ${{ secrets.PRIVATE_GAME_READ_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Confirm private working tree without printing files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d game-private/.git
+          test -f game-private/package.json
+          echo "RESULT: PRIVATE_REPOSITORY_READ_OK"
+          echo "RESULT: PRIVATE_FILES_NOT_PRINTED"
+          echo "RESULT: NO_MODEL_CALLS_NO_WRITES"
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf game-private
