@@ -11,7 +11,7 @@ const task=await readFile(join(process.cwd(),'task-private/docs/orchestrator/tas
 if (!task.trim()||task.length>2500) throw Error('Task size out of bounds');
 const route=routeTask(task,{
   mode:process.env.ORCHESTRATOR_ROUTING_MODE||'auto',
-  controller:process.env.ORCHESTRATOR_CONTROLLER||undefined
+  controller:process.env.ORCHESTRATOR_CONTROLLER&&process.env.ORCHESTRATOR_CONTROLLER!=='auto'?process.env.ORCHESTRATOR_CONTROLLER:undefined
 });
 console.log('STATUS: ROUTE '+JSON.stringify(createRouteMetadata(route)));
 function run(bin,args,opts={}) {
