@@ -1,0 +1,58 @@
+name: Codex Plus subscription smoke test
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  codex-test:
+    if: github.actor == 'skj04327'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Prepare private Codex authentication
+        shell: bash
+        env:
+          AUTH_B64: ${{ secrets.CODEX_AUTH_JSON_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "$AUTH_B64" ]; then
+            echo "::error::CODEX_AUTH_JSON_B64 is missing"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/codex-home"
+          chmod 700 "$RUNNER_TEMP/codex-home"
+          printf '%s' "$AUTH_B64" | base64 --decode > "$RUNNER_TEMP/codex-home/auth.json"
+          chmod 600 "$RUNNER_TEMP/codex-home/auth.json"
+          python3 - <<'PY'
+          import json,os
+          path=os.path.join(os.environ["RUNNER_TEMP"],"codex-home","auth.json")
+          with open(path,encoding="utf-8") as f: data=json.load(f)
+          if not isinstance(data,dict) or not data:
+              raise SystemExit("Invalid authentication file (contents withheld)")
+          print("DIAG: AUTH_FILE_READY")
+          PY
+      - name: Install official Codex CLI
+        run: npm install -g @openai/codex
+      - name: Test Plus authentication without publishing model output
+        shell: bash
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+          OPENAI_API_KEY: ""
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          set +e
+          codex exec --skip-git-repo-check --sandbox read-only --output-last-message "$RUNNER_TEMP/codex-answer.txt" "Reply with exactly OK." > "$RUNNER_TEMP/codex-stdout.log" 2> "$RUNNER_TEMP/codex-stderr.log"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ] && [ -f "$RUNNER_TEMP/codex-answer.txt" ] && [ "$(tr -d '\r\n ' < "$RUNNER_TEMP/codex-answer.txt")" = "OK" ]; then
+            echo "DIAG: CODEX_PLUS_AUTH_SUCCESS"
+          else
+            echo "DIAG: CODEX_TEST_FAILED exit_code=$rc"
+            echo "DIAG: Full output withheld to protect account credentials and prompts"
+            exit 1
+          fi
+      - name: Delete authentication file
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/codex-home" "$RUNNER_TEMP/codex-answer.txt" "$RUNNER_TEMP/codex-stdout.log" "$RUNNER_TEMP/codex-stderr.log"
