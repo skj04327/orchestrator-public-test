@@ -1,0 +1,77 @@
+name: Private game baseline checks (sanitized read-only)
+on:
+  push:
+    branches:
+      - feature/private-baseline-preflight-v1
+  pull_request:
+    paths:
+      - .github/workflows/ci-private-baseline.yml
+permissions:
+  contents: read
+concurrency:
+  group: private-baseline-preflight
+  cancel-in-progress: false
+jobs:
+  private-baseline:
+    if: github.actor == 'skj04327'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout public control scripts (no persistent credentials)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout private game main read-only
+        uses: actions/checkout@v4
+        with:
+          repository: skj04327/the-twilight-of-korea
+          ref: main
+          path: private-game
+          token: ${{ secrets.PRIVATE_GAME_READ_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check real game dependencies, typecheck, unit tests and build without revealing output
+        shell: bash
+        working-directory: private-game
+        run: |
+          set -euo pipefail
+          umask 077
+          status=0
+          run_quietly() {
+            local step="$1" window="$2"
+            shift 2
+            # The raw logs can contain private paths/code and must NEVER reach public Actions output.
+            local logfile="$RUNNER_TEMP/private-baseline-${step}.log"
+            if timeout --kill-after=10s "$window" "$@" >"$logfile" 2>&1; then
+              echo "STATUS: ${step}=PASS"
+            else
+              local rc="$?"
+              echo "STATUS: ${step}=FAIL (exit=${rc})"
+              status=1
+              return 1
+            fi
+          }
+          if run_quietly install 6m npm ci --no-audit --no-fund; then
+            run_quietly typecheck 4m npm run typecheck || true
+            run_quietly unit-tests 8m npm test -- --reporter=dot || true
+            run_quietly build 5m npm run build || true
+          else
+            echo "STATUS: validation=SKIPPED_AFTER_INSTALL_FAILURE"
+          fi
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "STATUS: tracked-source-unchanged=PASS"
+          else
+            echo "STATUS: tracked-source-unchanged=FAIL"
+            status=1
+          fi
+          exit "$status"
+      - name: Delete temporary private data and hidden command output
+        if: always()
+        shell: bash
+        run: |
+          rm -rf private-game
+          rm -f "$RUNNER_TEMP"/private-baseline-*.log
