@@ -1,9 +1,9 @@
-name: Private task intake from Termux
+name: Private task from Termux to reviewed draft PR
 on:
   workflow_dispatch:
     inputs:
       task_id:
-        description: "Opaque task ID; never enter private task text here"
+        description: "Opaque private task ID (never enter task text)"
         required: true
         type: string
 permissions:
@@ -12,23 +12,24 @@ concurrency:
   group: termux-task-intake
   cancel-in-progress: false
 jobs:
-  task-intake:
+  task-execution:
     if: github.actor == 'skj04327' && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 55
     steps:
-      - name: Validate opaque task identifier
+      - name: Validate task ID
         shell: bash
         env:
           TASK_ID: ${{ inputs.task_id }}
         run: |
           set -euo pipefail
-          if [[ ! "$TASK_ID" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9]+$ ]]; then
-            echo "::error::Invalid task ID"
-            exit 1
-          fi
-          echo "RESULT: TASK_ID_VALID"
-      - name: Retrieve task from private repository
+          [[ "$TASK_ID" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9]+$ ]] || { echo "::error::Invalid task ID"; exit 1; }
+          echo "STATUS: TASK_ID_VALID"
+      - name: Checkout public orchestrator
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout private task queue
         uses: actions/checkout@v4
         with:
           repository: skj04327/the-twilight-of-korea
@@ -36,27 +37,60 @@ jobs:
           path: task-private
           token: ${{ secrets.PRIVATE_GAME_READ_TOKEN }}
           persist-credentials: false
+      - name: Checkout private game main
+        uses: actions/checkout@v4
+        with:
+          repository: skj04327/the-twilight-of-korea
+          ref: main
+          path: private-game
+          token: ${{ secrets.PRIVATE_GAME_READ_TOKEN }}
+          persist-credentials: false
           fetch-depth: 1
-      - name: Confirm private task is readable (never print task contents)
+      - name: Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Restore subscription auth (never log credentials)
+        shell: bash
+        env:
+          CODEX_B64: ${{ secrets.CODEX_AUTH_JSON_B64 }}
+          AGY_B64: ${{ secrets.ANTIGRAVITY_OAUTH_B64 }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          for var in CODEX_B64 AGY_B64 CLAUDE_CODE_OAUTH_TOKEN; do
+            [ -n "${!var}" ] || { echo "::error::Missing subscription secret"; exit 1; }
+          done
+          install -d -m 700 "$RUNNER_TEMP/codex-home" "$HOME/.gemini/antigravity-cli"
+          (umask 077; printf '%s' "$CODEX_B64" | base64 -d > "$RUNNER_TEMP/codex-home/auth.json")
+          (umask 077; printf '%s' "$AGY_B64" | base64 -d > "$HOME/.gemini/antigravity-cli/antigravity-oauth-token")
+      - name: Install three AI command-line tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://claude.ai/install.sh | bash >/dev/null
+          curl -fsSL https://antigravity.google/cli/install.sh | bash >/dev/null
+          npm install -g @openai/codex >/dev/null
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Plan, modify game source, test and independently review
         shell: bash
         env:
           TASK_ID: ${{ inputs.task_id }}
-        run: |
-          set -euo pipefail
-          file="task-private/docs/orchestrator/tasks/$TASK_ID.txt"
-          if [ ! -s "$file" ]; then
-            echo "::error::Private task ID not found"
-            exit 1
-          fi
-          size=$(wc -c < "$file")
-          if [ "$size" -gt 10000 ]; then
-            echo "::error::Task exceeds size limit"
-            exit 1
-          fi
-          echo "RESULT: PRIVATE_TASK_RECEIVED"
-          echo "RESULT: TASK_CONTENT_KEPT_PRIVATE"
-          echo "RESULT: INTAKE_ONLY_NO_CODE_CHANGES"
-      - name: Delete private task checkout
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ""
+          OPENAI_API_KEY: ""
+          GEMINI_API_KEY: ""
+          GOOGLE_API_KEY: ""
+        run: node scripts/execute-private-task.mjs
+      - name: Publish private Draft PR only after successful checks
+        shell: bash
+        env:
+          TASK_ID: ${{ inputs.task_id }}
+          PRIVATE_GAME_WRITE_TOKEN: ${{ secrets.PRIVATE_GAME_WRITE_TOKEN }}
+        run: node scripts/publish-private-task.mjs
+      - name: Remove private checkouts and auth
         if: always()
         shell: bash
-        run: rm -rf task-private
+        run: |
+          rm -rf task-private private-game "$RUNNER_TEMP/codex-home" "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" .private-task-result.json
