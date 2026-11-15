@@ -23,10 +23,17 @@ function run(bin,args,opts={}) {
   return new Promise((resolve,reject)=>{
     let out='',err='',outputBytes=0,limitReason=null,settled=false;
     const proc=spawn(bin,args,{cwd:opts.cwd||cwd,stdio:['ignore','pipe','pipe'],
+      detached:process.platform!=='win32',
       env:{...process.env,ANTHROPIC_API_KEY:'',OPENAI_API_KEY:'',GOOGLE_API_KEY:'',GEMINI_API_KEY:''}});
+    const stopGroup=()=>{
+      try{
+        if(process.platform!=='win32'&&proc.pid)process.kill(-proc.pid,'SIGKILL');
+        else proc.kill('SIGKILL');
+      }catch{proc.kill('SIGKILL');}
+    };
     const fail=e=>{if(settled)return;settled=true;clearTimeout(timer);reject(e);};
     const timer=setTimeout(()=>{
-      if(!limitReason){limitReason='timeout';proc.kill('SIGKILL');}
+      if(!limitReason){limitReason='timeout';stopGroup();}
     },opts.timeout||240000);
     const collect=(stream,chunk)=>{
       const value=chunk.toString('utf8');
@@ -34,7 +41,7 @@ function run(bin,args,opts={}) {
       if(stream==='out')out+=value;else err+=value;
       if(outputBytes>240000&&!limitReason){
         limitReason='output_limit';
-        proc.kill('SIGKILL');
+        stopGroup();
       }
     };
     proc.stdout.on('data',d=>collect('out',d));
