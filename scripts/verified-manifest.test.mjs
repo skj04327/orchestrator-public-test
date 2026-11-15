@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtemp,mkdir,writeFile,rm,symlink} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {digestChangedFiles,isSafeManifestPath,isVerifiedDigest} from './verified-manifest.mjs';
+import {collectVerifiedFiles,digestChangedFiles,isSafeManifestPath,isVerifiedDigest} from './verified-manifest.mjs';
 
 test('file hash detects post-review source changes, independent of path order',async()=>{
   const root=await mkdtemp(join(tmpdir(),'verified-manifest-'));
@@ -43,5 +43,18 @@ test('rejects symlinks and oversized source payloads',async()=>{
     await assert.rejects(digestChangedFiles(root,['src/link.ts']));
     await writeFile(join(root,'src','target.ts'),'x'.repeat(65001));
     await assert.rejects(digestChangedFiles(root,['src/target.ts']));
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('publisher uses pre-verified buffer, never a second disk read',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'verified-manifest-'));
+  try{
+    await mkdir(join(root,'src'),{recursive:true});
+    await writeFile(join(root,'src','one.ts'),'const one = 1;\n');
+    const capture=await collectVerifiedFiles(root,['src/one.ts']);
+    assert.ok(isVerifiedDigest(capture.digest));
+    await writeFile(join(root,'src','one.ts'),'const one = 999;\n');
+    assert.equal(capture.files[0].content.toString('utf8'),'const one = 1;\n');
+    assert.notEqual(capture.digest,await digestChangedFiles(root,['src/one.ts']));
   }finally{await rm(root,{recursive:true,force:true});}
 });
