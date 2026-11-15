@@ -1,0 +1,15 @@
+name: Free Actions runner smoke test
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  free-runner-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Verify runner starts
+        run: |
+          echo "PUBLIC_ACTIONS_RUNNER_OK"
+          uname -m
+          echo "No AI, API calls, or paid services used."
