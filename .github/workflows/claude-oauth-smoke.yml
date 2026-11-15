@@ -46,7 +46,7 @@ jobs:
           combined = out + "\n" + err
           reported = False
           for code in ("401", "403", "429"):
-              if re.search(r"(?<!\\d)" + code + r"(?!\\d)", combined):
+              if re.search(r"(?<!\d)" + code + r"(?!\d)", combined):
                   print("DIAG: HTTP_" + code)
                   reported = True
           if re.search(r"OAuth access token (?:is invalid|has been revoked|expired)", combined, re.I):
