@@ -1,0 +1,38 @@
+name: Validate integrated orchestrator modules (no private data)
+on:
+  push:
+    branches:
+      - feature/orchestrator-integration-v1
+  pull_request:
+    paths:
+      - scripts/audit-ledger*
+      - scripts/persist-private-audit*
+      - scripts/retry-policy*
+      - scripts/execute-private-task.mjs
+      - scripts/publish-private-task.mjs
+      - .github/workflows/task-intake.yml
+      - .github/workflows/ci-orchestrator-integration.yml
+      - termux/ai
+permissions:
+  contents: read
+jobs:
+  validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run no-secret deterministic unit tests
+        run: node --test scripts/audit-ledger.test.mjs scripts/persist-private-audit.test.mjs scripts/retry-policy.test.mjs scripts/dynamic-router.test.mjs scripts/agent-backends.test.mjs
+      - name: Syntax and CLI checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in scripts/audit-ledger.mjs scripts/persist-private-audit.mjs scripts/retry-policy.mjs scripts/execute-private-task.mjs scripts/publish-private-task.mjs; do
+            node --check "$file"
+          done
+          bash -n termux/ai

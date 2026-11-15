@@ -4,6 +4,8 @@ import { join, relative } from 'node:path';
 import { createHash } from 'node:crypto';
 import { routeTask, createRouteMetadata } from './dynamic-router.mjs';
 import { runPlanner, runReviewer, parseReviewVerdict } from './agent-backends.mjs';
+import { createAuditLedger, writePrivateAuditReport } from './audit-ledger.mjs';
+import { shouldAttemptRepair } from './retry-policy.mjs';
 const cwd=join(process.cwd(),'private-game');
 const id=process.env.TASK_ID;
 if (!/^[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9]+$/.test(id||'')) throw Error('Invalid task ID');
@@ -14,21 +16,68 @@ const route=routeTask(task,{
   controller:process.env.ORCHESTRATOR_CONTROLLER&&process.env.ORCHESTRATOR_CONTROLLER!=='auto'?process.env.ORCHESTRATOR_CONTROLLER:undefined
 });
 console.log('STATUS: ROUTE '+JSON.stringify(createRouteMetadata(route)));
+const ledger=createAuditLedger(id);
+const auditDir=process.env.ORCHESTRATOR_AUDIT_DIR;
+let finalStatus='failed';
 function run(bin,args,opts={}) {
   return new Promise((resolve,reject)=>{
-    let out='',err='',over=false;
+    let out='',err='',outputBytes=0,limitReason=null,settled=false;
     const proc=spawn(bin,args,{cwd:opts.cwd||cwd,stdio:['ignore','pipe','pipe'],
+      detached:process.platform!=='win32',
       env:{...process.env,ANTHROPIC_API_KEY:'',OPENAI_API_KEY:'',GOOGLE_API_KEY:'',GEMINI_API_KEY:''}});
-    const timer=setTimeout(()=>{over=true;proc.kill('SIGKILL');},opts.timeout||240000);
-    proc.stdout.on('data',d=>{out+=d;if(out.length>240000){over=true;proc.kill('SIGKILL');}});
-    proc.stderr.on('data',d=>{err+=d;if(err.length>240000){over=true;proc.kill('SIGKILL');}});
-    proc.on('error',e=>{clearTimeout(timer);reject(Error('Command unavailable: '+bin+' ('+e.code+')'));});
+    const stopGroup=()=>{
+      try{
+        if(process.platform!=='win32'&&proc.pid)process.kill(-proc.pid,'SIGKILL');
+        else proc.kill('SIGKILL');
+      }catch{proc.kill('SIGKILL');}
+    };
+    const fail=e=>{if(settled)return;settled=true;clearTimeout(timer);reject(e);};
+    const timer=setTimeout(()=>{
+      if(!limitReason){limitReason='timeout';stopGroup();}
+    },opts.timeout||240000);
+    const collect=(stream,chunk)=>{
+      const value=chunk.toString('utf8');
+      outputBytes+=chunk.length;
+      if(stream==='out')out+=value;else err+=value;
+      if(outputBytes>240000&&!limitReason){
+        limitReason='output_limit';
+        stopGroup();
+      }
+    };
+    proc.stdout.on('data',d=>collect('out',d));
+    proc.stderr.on('data',d=>collect('err',d));
+    proc.on('error',e=>{
+      const failure=Error('Command unavailable: '+bin);
+      failure.failureKind='spawn_error';
+      fail(failure);
+    });
     proc.on('close',code=>{
-      clearTimeout(timer);
-      if(code!==0||over){const e=Error(bin+' command failed ('+(over?'limit':'exit '+code)+')');e.privateDiagnostic=(out+'\n'+err).slice(-8500);reject(e);}
-      else resolve(out);
+      if(settled)return;
+      clearTimeout(timer);settled=true;
+      if(code!==0||limitReason){
+        const kind=limitReason||(code===null?'signal':'nonzero_exit');
+        const e=Error(bin+' command failed ('+kind+')');
+        e.failureKind=kind;
+        e.exitCode=Number.isInteger(code)?code:null;
+        e.privateDiagnostic=(out+'\\n'+err).slice(-8500);
+        reject(e);
+      }else resolve(out);
     });
   });
+}
+async function observed(stage,actor,operation){
+  const began=Date.now();
+  ledger.record({stage,actor,status:'started'});
+  try{
+    const result=await operation();
+    ledger.record({stage,actor,status:'passed',durationMs:Date.now()-began,
+      verdict:stage==='review'?'PASS':null});
+    return result;
+  }catch(e){
+    ledger.record({stage,actor,status:'failed',durationMs:Date.now()-began,
+      failureKind:e.failureKind||'operation_failed',verdict:stage==='review'?'FAIL':null});
+    throw e;
+  }
 }
 async function changed() {
   const statuses=await run('git',['status','--porcelain','--untracked-files=all']);
@@ -63,13 +112,13 @@ try{
   const start=(await run('git',['status','--porcelain','--untracked-files=all'])).trim();
   if(start)throw Error('Source checkout is not clean');
   safeLog('Install existing project dependencies');
-  await run('npm',['ci','--no-audit','--no-fund'],{timeout:360000});
+  await observed('intake','system',()=>run('npm',['ci','--no-audit','--no-fund'],{timeout:360000}));
   const sourceRules='Read-only initial repo baseline. Respect current branch, existing feature owners, and project directions. Never edit existing tests, workflow, package files, docs, lock files, git config, or assets. Only modify src/**/*.ts or src/**/*.tsx and ADD new tests/**/*.test.ts. Do not run git commands that commit or push. Do not install dependencies. No file deletion. No deployment or API spending. Keep changes small and relevant.';
   safeLog('Control tower '+route.controller+' planning private task');
-  const planResult={result:await runPlanner({
+  const planResult={result:await observed('plan',route.controller,()=>runPlanner({
     provider:route.controller,run,cwd,
     prompt:'Plan this task on the actual repository. '+sourceRules+' Output a concise 4-10 step implementation plan including relevant files; do not modify files. TASK:\\n'+task
-  })};
+  }))};
   if(planResult.result.length>10000)throw Error('Control tower plan too long');
   if((await run('git',['status','--porcelain','--untracked-files=all'])).trim())throw Error('Planning unexpectedly modified repository');
   stage='coding';
@@ -79,25 +128,42 @@ try{
     'Do not output credentials, private source text, or user task to terminal logs.',
     'Task: '+task,'Claude implementation guidance: '+planResult.result,
     'Finish only when changes are saved to files, not merely described.'].join('\n');
-  await run('codex',['exec','--sandbox','workspace-write',codingPrompt],{timeout:660000});
+  await observed('implementation','codex',()=>run('codex',['exec','--sandbox','workspace-write',codingPrompt],{timeout:660000}));
   let paths=await changed();
   safeLog('Modified paths validated ('+paths.length+' files)');
   stage='validation';
-  let diagnostic='';
-  // Dot reporting avoids huge Vitest output exhausting the protected output buffer.
+  const stageByName={'TypeScript':'typecheck','Unit tests':'unit-test','Production build':'build'};
   const checks=[['TypeScript','npm',['run','typecheck']],['Unit tests','npm',['test','--','--reporter=dot']],['Production build','npm',['run','build']]];
-  let ok=true;
-  for(const [name,bin,args] of checks) {
-    try{safeLog('Checking '+name);await run(bin,args,{timeout:420000});safeLog(name+' passed');}
-    catch(e){ok=false;diagnostic+='\n'+name+': '+(e.privateDiagnostic||e.message).slice(-4500);safeLog(name+' failed');break;}
+  async function runChecks(prefix){
+    for(const [name,bin,args] of checks){
+      safeLog(prefix+' '+name);
+      try{
+        await observed(stageByName[name],'system',()=>run(bin,args,{timeout:420000}));
+        safeLog(name+' passed');
+      }catch(e){
+        // Never echo the captured private diagnostic into public Actions logs.
+        safeLog(name+' failed: '+(e.failureKind||'operation_failed'));
+        return e;
+      }
+    }
+    return null;
   }
-  if(!ok) {
-    // One repair pass; tests are not weakened and all changes are checked again.
-    safeLog('Codex repairing validation failure');
-    await run('codex',['exec','--sandbox','workspace-write','Fix the reported validation problem without changing existing tests or any files outside src/**/*.ts, src/**/*.tsx or new tests/**/*.test.ts. No package changes. Keep requested behavior. Diagnostic:\n'+diagnostic.slice(-6000)],{timeout:240000});
+  let failure=await runChecks('Checking');
+  let repairs=0;
+  while(failure&&shouldAttemptRepair(failure.failureKind,repairs)){
+    safeLog('Codex repairing code validation failure (bounded)');
+    const diagnostic=(failure.privateDiagnostic||failure.message).slice(-4500);
+    await observed('repair','codex',()=>run('codex',[
+      'exec','--sandbox','workspace-write',
+      'Fix validation failure without modifying existing tests or files outside src/**/*.ts, src/**/*.tsx, or NEW tests/**/*.test.ts. Do not change package files, tools or CI. Preserve requirements. Private diagnostic:\\n'+diagnostic
+    ],{timeout:180000}));
     paths=await changed();
-    for(const [name,bin,args] of checks){safeLog('Rechecking '+name);await run(bin,args,{timeout:420000});}
+    repairs++;
+    failure=await runChecks('Rechecking');
   }
+  // Timeouts, output exhaustion and CLI infrastructure problems are not code defects.
+  // Fail closed and retain a private metadata report; never publish unverified code.
+  if(failure)throw failure;
   paths=await changed();
   const diff=await gitDiff(paths);
   stage='review';
@@ -106,18 +172,30 @@ try{
   ).digest('hex');
   const beforeReview=await fingerprint(paths);
   safeLog(route.reviewer+' independently reviewing code changes');
-  const review=await runReviewer({
+  await observed('review',route.reviewer,async()=>{
+    const review=await runReviewer({
     provider:route.reviewer,run,cwd,
     prompt:'You are a strict independent code reviewer. Evaluate adherence to the task, regression risk, obvious security problems, and whether tests appear meaningful. First line EXACTLY PASS or FAIL. Then brief reason. Do not edit any files. TASK:\\n'+task+'\\nCONTROL TOWER PLAN:\\n'+planResult.result+'\\nPATCH:\\n'+diff
+    });
+    if(parseReviewVerdict(review)!=='PASS')throw Error('Independent review rejected task');
   });
-  const verdict=parseReviewVerdict(review);
-  if(verdict!=='PASS')throw Error('Independent review rejected task');
   paths=await changed();
   if((await fingerprint(paths))!==beforeReview)throw Error('Reviewer modified source after validation');
   safeLog(route.reviewer+' independent review PASSED');
   await writeFile(join(process.cwd(),'.private-task-result.json'),JSON.stringify({id,paths,route:createRouteMetadata(route)}));
   safeLog('Validated private change ready for PR publishing');
+  finalStatus='passed';
 }catch(e){
   console.error('RESULT: FAILED during '+stage+' ('+String(e.message).replace(/[^a-zA-Z0-9 _.()/-]/g,'').slice(0,160)+')');
   process.exitCode=1;
+}finally{
+  if(auditDir){
+    try{
+      await writePrivateAuditReport(auditDir,ledger.snapshot({status:finalStatus}));
+      safeLog('Private execution audit prepared');
+    }catch{
+      console.error('RESULT: PRIVATE_AUDIT_PREPARE_FAILED');
+      process.exitCode=1;
+    }
+  }
 }
