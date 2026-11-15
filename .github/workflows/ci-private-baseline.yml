@@ -3,6 +3,9 @@ on:
   push:
     branches:
       - feature/private-baseline-preflight-v1
+  pull_request:
+    paths:
+      - .github/workflows/ci-private-baseline.yml
 permissions:
   contents: read
 concurrency:
