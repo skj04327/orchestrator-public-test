@@ -1,4 +1,4 @@
-import { readFile, lstat } from 'node:fs/promises';
+import { readFile, writeFile, lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 const cwd=join(process.cwd(),'private-game');
@@ -62,6 +62,7 @@ try {
     head:branch,base:'main',draft:true,
     body:'Private Termux task '+id+'; control tower: '+(report.route?.controller??'claude')+', developer: Codex, independent reviewer: '+(report.route?.reviewer??'gemini')+'. npm typecheck, unit tests and production build passed. Changed paths: '+report.paths.map(x=>'\`'+x+'\`').join(', ')+'. Human review required. No automatic merge.'
   });
+  await writeFile('.private-task-pr.json',JSON.stringify({prUrl:pr.html_url}),{mode:0o600});
   console.log('RESULT: DRAFT_PR_CREATED '+pr.html_url);
 }catch(e){
   console.error('RESULT: PUBLISH_FAILED '+String(e.message).replace(/[^a-zA-Z0-9 _.():/-]/g,'').slice(0,160));
