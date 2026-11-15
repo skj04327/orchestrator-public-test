@@ -1,0 +1,35 @@
+name: Test delegated workpacks (public, no secrets)
+on:
+  push:
+    branches:
+      - feature/delegated-workpacks-v1
+  pull_request:
+    paths:
+      - scripts/workpack-planner*
+      - scripts/execute-private-task.mjs
+      - scripts/audit-ledger*
+      - .github/workflows/ci-workpacks.yml
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Test workpack schema, blocked image backend, privacy audit and routing
+        run: |
+          node --test scripts/workpack-planner.test.mjs scripts/audit-ledger.test.mjs scripts/retry-policy.test.mjs scripts/dynamic-router.test.mjs
+      - name: Validate scripts without private source or authentication
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check scripts/workpack-planner.mjs
+          node --check scripts/execute-private-task.mjs
+          node --check scripts/audit-ledger.mjs
+          bash -n termux/ai
