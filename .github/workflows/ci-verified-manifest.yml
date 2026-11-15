@@ -1,0 +1,37 @@
+name: Verified publish manifest tests (no secrets)
+on:
+  push:
+    branches:
+      - feature/verified-publish-manifest-v1
+  pull_request:
+    paths:
+      - scripts/verified-manifest*
+      - scripts/execute-private-task.mjs
+      - scripts/publish-private-task.mjs
+      - scripts/orchestrator-offline-e2e.test.mjs
+      - .github/workflows/ci-verified-manifest.yml
+permissions:
+  contents: read
+jobs:
+  security-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Strict syntax validation
+        run: |
+          node --check scripts/verified-manifest.mjs
+          node --check scripts/execute-private-task.mjs
+          node --check scripts/publish-private-task.mjs
+      - name: Run digest and publisher tampering tests with no network or credentials
+        env:
+          ANTHROPIC_API_KEY: ""
+          OPENAI_API_KEY: ""
+          GEMINI_API_KEY: ""
+          GOOGLE_API_KEY: ""
+        run: node --test scripts/verified-manifest.test.mjs scripts/orchestrator-offline-e2e.test.mjs

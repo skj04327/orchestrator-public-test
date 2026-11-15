@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { readFile, writeFile, lstat } from 'node:fs/promises';
 import { join, relative } from 'node:path';
-import { createHash } from 'node:crypto';
+import { digestChangedFiles } from './verified-manifest.mjs';
 import { routeTask, createRouteMetadata } from './dynamic-router.mjs';
 import { runPlanner, runReviewer, parseReviewVerdict } from './agent-backends.mjs';
 import { createAuditLedger, writePrivateAuditReport } from './audit-ledger.mjs';
@@ -183,9 +183,7 @@ try{
   paths=await changed();
   const diff=await gitDiff(paths);
   stage='review';
-  const fingerprint=async items=>createHash('sha256').update(
-    (await Promise.all(items.map(async p=>p+'\\n'+(await readFile(join(cwd,p),'utf8'))))).join('\\n')
-  ).digest('hex');
+  const fingerprint=items=>digestChangedFiles(cwd,items);
   const beforeReview=await fingerprint(paths);
   safeLog(route.reviewer+' independently reviewing code changes');
   await observed('review',route.reviewer,async()=>{
@@ -198,7 +196,8 @@ try{
   paths=await changed();
   if((await fingerprint(paths))!==beforeReview)throw Error('Reviewer modified source after validation');
   safeLog(route.reviewer+' independent review PASSED');
-  await writeFile(join(process.cwd(),'.private-task-result.json'),JSON.stringify({id,paths,route:createRouteMetadata(route)}));
+  const verifiedContentSha256=await fingerprint(paths);
+  await writeFile(join(process.cwd(),'.private-task-result.json'),JSON.stringify({id,paths,verifiedContentSha256,route:createRouteMetadata(route)}),{mode:0o600});
   safeLog('Validated private change ready for PR publishing');
   finalStatus='passed';
 }catch(e){
