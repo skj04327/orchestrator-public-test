@@ -15,13 +15,14 @@ export function isSafeManifestPath(path){
 export function isVerifiedDigest(digest){
   return typeof digest==='string'&&DIGEST.test(digest);
 }
-export async function digestChangedFiles(root,paths){
+export async function collectVerifiedFiles(root,paths){
   if(typeof root!=='string'||!root||!Array.isArray(paths)||
      paths.length<1||paths.length>8||
      new Set(paths).size!==paths.length||
      paths.some(p=>!isSafeManifestPath(p)))
     throw Error('Unsafe PR manifest');
   const hasher=createHash('sha256');
+  const files=[];
   for(const p of [...paths].sort()){
     const file=join(root,p);
     const stat=await lstat(file);
@@ -35,6 +36,10 @@ export async function digestChangedFiles(root,paths){
     hasher.update('\0');
     hasher.update(content);
     hasher.update('\0');
+    files.push({path:p,content});
   }
-  return hasher.digest('hex');
+  return {digest:hasher.digest('hex'),files};
+}
+export async function digestChangedFiles(root,paths){
+  return (await collectVerifiedFiles(root,paths)).digest;
 }
