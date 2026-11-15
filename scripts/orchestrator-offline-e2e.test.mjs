@@ -125,3 +125,23 @@ test('offline image request is blocked before Codex and before publishing any ma
     assert.ok(!run.out.includes('초상화'));
   }finally{await rm(f.root,{recursive:true,force:true});}
 });
+
+
+test('offline tampering: code changed after review cannot reach GitHub publisher',async()=>{
+  const f=await fixture('인물 50명 추가해줘',plan);
+  try{
+    const run=await cmd(process.execPath,[RUNNER],{cwd:f.root,env:f.env});
+    assert.equal(run.code,0,run.out+'\n'+run.err);
+    const manifest=JSON.parse(await readFile(join(f.root,'.private-task-result.json'),'utf8'));
+    assert.match(manifest.verifiedContentSha256,/^[a-f0-9]{64}$/);
+    // Malicious or stale work changes the SAME safe path after review.
+    // The git status path list is unchanged, but its bytes are no longer approved.
+    await writeFile(join(f.root,'private-game','src','generated-one.ts'),
+      'export const one = "changed AFTER review";\n');
+    const pub=await cmd(process.execPath,['--import',MOCK_FETCH,PUBLISH],{cwd:f.root,env:f.env});
+    assert.equal(pub.code,1,pub.out+'\n'+pub.err);
+    assert.match(pub.err,/PUBLISH_FAILED/);
+    assert.equal((await readLines(f.fetchLog)).length,0);
+    assert.equal(await exists(join(f.root,'.private-task-pr.json')),false);
+  }finally{await rm(f.root,{recursive:true,force:true});}
+});
