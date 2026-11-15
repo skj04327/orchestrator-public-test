@@ -1,55 +1,62 @@
-name: Claude OAuth smoke test
+name: Claude subscription CLI authentication test
 on:
   workflow_dispatch:
 permissions:
   contents: read
-  id-token: write
 jobs:
   claude-test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - name: Check credential presence
-        env:
-          CLAUDE_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-        run: |
-          if [ -z "$CLAUDE_TOKEN" ]; then
-            echo "::error::Claude token secret is missing"
-            exit 1
-          fi
-          echo "Claude secret present"
-      - name: Read-only Claude invocation
-        id: claude
-        continue-on-error: true
-        uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          prompt: "Read README.md and summarize it in one sentence. Do not modify files."
-          claude_args: "--max-turns 3 --allowedTools Read,Glob,Grep"
-      - name: Diagnose failed invocation without exposing response or secrets
-        if: steps.claude.outcome == 'failure'
+      - name: Install official Claude CLI
         shell: bash
         run: |
-          python3 - <<'PY'
-          import pathlib, re
-          path = pathlib.Path('/home/runner/work/_temp/claude-execution-output.json')
-          if not path.exists():
-              print('DIAG: No Claude result file found; failure occurred before or outside the model response.')
-          else:
-              data = path.read_text(errors='replace')
-              print('DIAG: Claude result file found.')
-              for label, pattern in [
-                  ('HTTP_401', r'(?<!\d)401(?!\d)|unauthoriz(?:ed|ation)'),
-                  ('HTTP_403', r'(?<!\d)403(?!\d)|forbidden'),
-                  ('HTTP_429', r'(?<!\d)429(?!\d)|rate.?limit|usage.?limit'),
-                  ('TOKEN_EXPIRED', r'token.{0,30}expir|expir.{0,30}token'),
-                  ('AUTH_ERROR', r'authenticat|invalid.?token|oauth'),
-                  ('MODEL_UNAVAILABLE', r'model.{0,30}(unavailable|not found|invalid)'),
-                  ('BILLING_ERROR', r'billing|payment|credit.{0,20}exhaust'),
-              ]:
-                  if re.search(pattern, data, re.I):
-                      print('DIAG: ' + label)
-              print('DIAG: Raw Claude output withheld because this is a public repository.')
+          curl -fsSL https://claude.ai/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Test Claude subscription without revealing output
+        shell: bash
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ""
+        run: |
+          if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+            echo "::error::Missing Claude subscription token"
+            exit 1
+          fi
+          set +e
+          claude -p "Reply with exactly OK." --output-format json --max-turns 1 > "$RUNNER_TEMP/claude-result.json" 2> "$RUNNER_TEMP/claude-stderr.txt"
+          rc=$?
+          set -e
+          CLAUDE_RC="$rc" python3 - <<'PY'
+          import json, os, pathlib, re, sys
+          p = pathlib.Path(os.environ["RUNNER_TEMP"])
+          out = (p/"claude-result.json").read_text(errors="replace")[:200000]
+          err = (p/"claude-stderr.txt").read_text(errors="replace")[:200000]
+          status = int(os.environ["CLAUDE_RC"])
+          try:
+              result = json.loads(out)
+          except Exception:
+              result = {}
+          success = status == 0 and result.get("is_error") is False and result.get("type") == "result"
+          if success:
+              print("DIAG: CLAUDE_SUBSCRIPTION_AUTH_SUCCESS")
+              sys.exit(0)
+          # Report only numeric HTTP error codes and tightly scoped error categories.
+          # Do not print CLI output, stack traces, tokens, or full model response.
+          combined = out + "\n" + err
+          reported = False
+          for code in ("401", "403", "429"):
+              if re.search(r"(?<!\\d)" + code + r"(?!\\d)", combined):
+                  print("DIAG: HTTP_" + code)
+                  reported = True
+          if re.search(r"OAuth access token (?:is invalid|has been revoked|expired)", combined, re.I):
+              print("DIAG: OAUTH_TOKEN_REJECTED")
+              reported = True
+          if re.search(r"rate limit|usage limit|five.hour limit", combined, re.I):
+              print("DIAG: RATE_OR_USAGE_LIMIT")
+              reported = True
+          if not reported:
+              print("DIAG: UNCLASSIFIED_CLAUDE_ERROR")
+          print("DIAG: CLI exited with non-success; raw output intentionally suppressed")
+          sys.exit(1)
           PY
-          exit 1
