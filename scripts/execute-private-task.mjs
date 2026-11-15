@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { routeTask, createRouteMetadata } from './dynamic-router.mjs';
 import { runPlanner, runReviewer, parseReviewVerdict } from './agent-backends.mjs';
 import { createAuditLedger, writePrivateAuditReport } from './audit-ledger.mjs';
+import { shouldAttemptRepair } from './retry-policy.mjs';
 const cwd=join(process.cwd(),'private-game');
 const id=process.env.TASK_ID;
 if (!/^[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9]+$/.test(id||'')) throw Error('Invalid task ID');
@@ -124,22 +125,38 @@ try{
   let paths=await changed();
   safeLog('Modified paths validated ('+paths.length+' files)');
   stage='validation';
-  let diagnostic='';
-  // Dot reporting avoids huge Vitest output exhausting the protected output buffer.
   const stageByName={'TypeScript':'typecheck','Unit tests':'unit-test','Production build':'build'};
   const checks=[['TypeScript','npm',['run','typecheck']],['Unit tests','npm',['test','--','--reporter=dot']],['Production build','npm',['run','build']]];
-  let ok=true;
-  for(const [name,bin,args] of checks) {
-    try{safeLog('Checking '+name);await observed(stageByName[name],'system',()=>run(bin,args,{timeout:420000}));safeLog(name+' passed');}
-    catch(e){ok=false;diagnostic+='\n'+name+': '+(e.privateDiagnostic||e.message).slice(-4500);safeLog(name+' failed');break;}
+  async function runChecks(prefix){
+    for(const [name,bin,args] of checks){
+      safeLog(prefix+' '+name);
+      try{
+        await observed(stageByName[name],'system',()=>run(bin,args,{timeout:420000}));
+        safeLog(name+' passed');
+      }catch(e){
+        // Never echo the captured private diagnostic into public Actions logs.
+        safeLog(name+' failed: '+(e.failureKind||'operation_failed'));
+        return e;
+      }
+    }
+    return null;
   }
-  if(!ok) {
-    // One repair pass; tests are not weakened and all changes are checked again.
-    safeLog('Codex repairing validation failure');
-    await observed('repair','codex',()=>run('codex',['exec','--sandbox','workspace-write','Fix the reported validation problem without changing existing tests or any files outside src/**/*.ts, src/**/*.tsx or new tests/**/*.test.ts. No package changes. Keep requested behavior. Diagnostic:\n'+diagnostic.slice(-6000)],{timeout:240000}));
+  let failure=await runChecks('Checking');
+  let repairs=0;
+  while(failure&&shouldAttemptRepair(failure.failureKind,repairs)){
+    safeLog('Codex repairing code validation failure (bounded)');
+    const diagnostic=(failure.privateDiagnostic||failure.message).slice(-4500);
+    await observed('repair','codex',()=>run('codex',[
+      'exec','--sandbox','workspace-write',
+      'Fix validation failure without modifying existing tests or files outside src/**/*.ts, src/**/*.tsx, or NEW tests/**/*.test.ts. Do not change package files, tools or CI. Preserve requirements. Private diagnostic:\\n'+diagnostic
+    ],{timeout:180000}));
     paths=await changed();
-    for(const [name,bin,args] of checks){safeLog('Rechecking '+name);await observed(stageByName[name],'system',()=>run(bin,args,{timeout:420000}));}
+    repairs++;
+    failure=await runChecks('Rechecking');
   }
+  // Timeouts, output exhaustion and CLI infrastructure problems are not code defects.
+  // Fail closed and retain a private metadata report; never publish unverified code.
+  if(failure)throw failure;
   paths=await changed();
   const diff=await gitDiff(paths);
   stage='review';
