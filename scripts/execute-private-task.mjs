@@ -1,11 +1,18 @@
 import { spawn } from 'node:child_process';
 import { readFile, writeFile, lstat } from 'node:fs/promises';
 import { join, relative } from 'node:path';
+import { routeTask, createRouteMetadata } from './dynamic-router.mjs';
+import { runPlanner, runReviewer, parseReviewVerdict } from './agent-backends.mjs';
 const cwd=join(process.cwd(),'private-game');
 const id=process.env.TASK_ID;
 if (!/^[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9]+$/.test(id||'')) throw Error('Invalid task ID');
 const task=await readFile(join(process.cwd(),'task-private/docs/orchestrator/tasks',id+'.txt'),'utf8');
 if (!task.trim()||task.length>2500) throw Error('Task size out of bounds');
+const route=routeTask(task,{
+  mode:process.env.ORCHESTRATOR_ROUTING_MODE||'auto',
+  controller:process.env.ORCHESTRATOR_CONTROLLER||undefined
+});
+console.log('STATUS: ROUTE '+JSON.stringify(createRouteMetadata(route)));
 function run(bin,args,opts={}) {
   return new Promise((resolve,reject)=>{
     let out='',err='',over=false;
@@ -56,10 +63,12 @@ try{
   safeLog('Install existing project dependencies');
   await run('npm',['ci','--no-audit','--no-fund'],{timeout:360000});
   const sourceRules='Read-only initial repo baseline. Respect current branch, existing feature owners, and project directions. Never edit existing tests, workflow, package files, docs, lock files, git config, or assets. Only modify src/**/*.ts or src/**/*.tsx and ADD new tests/**/*.test.ts. Do not run git commands that commit or push. Do not install dependencies. No file deletion. No deployment or API spending. Keep changes small and relevant.';
-  safeLog('Claude planning private task');
-  const planOut=await run('claude',['-p','Plan this task on the actual repository. '+sourceRules+' Output a concise 4-10 step implementation plan including relevant files; do not modify files. TASK:\n'+task,'--output-format','json','--max-turns','5','--allowedTools','Read,Glob,Grep'],{timeout:180000});
-  const planResult=JSON.parse(planOut);
-  if(planResult.is_error||typeof planResult.result!=='string'||planResult.result.length>10000)throw Error('Claude plan invalid');
+  safeLog('Control tower '+route.controller+' planning private task');
+  const planResult={result:await runPlanner({
+    provider:route.controller,run,cwd,
+    prompt:'Plan this task on the actual repository. '+sourceRules+' Output a concise 4-10 step implementation plan including relevant files; do not modify files. TASK:\\n'+task
+  })};
+  if(planResult.result.length>10000)throw Error('Control tower plan too long');
   if((await run('git',['status','--porcelain','--untracked-files=all'])).trim())throw Error('Planning unexpectedly modified repository');
   stage='coding';
   safeLog('Codex implementing private task on isolated checkout');
@@ -73,7 +82,8 @@ try{
   safeLog('Modified paths validated ('+paths.length+' files)');
   stage='validation';
   let diagnostic='';
-  const checks=[['TypeScript','npm',['run','typecheck']],['Unit tests','npm',['test','--','--run']],['Production build','npm',['run','build']]];
+  // Dot reporting avoids huge Vitest output exhausting the protected output buffer.
+  const checks=[['TypeScript','npm',['run','typecheck']],['Unit tests','npm',['test','--','--reporter=dot']],['Production build','npm',['run','build']]];
   let ok=true;
   for(const [name,bin,args] of checks) {
     try{safeLog('Checking '+name);await run(bin,args,{timeout:420000});safeLog(name+' passed');}
@@ -82,20 +92,23 @@ try{
   if(!ok) {
     // One repair pass; tests are not weakened and all changes are checked again.
     safeLog('Codex repairing validation failure');
-    await run('codex',['exec','--sandbox','workspace-write','Fix the reported validation problem without changing existing tests or any files outside src/**/*.ts, src/**/*.tsx or new tests/**/*.test.ts. No package changes. Keep requested behavior. Diagnostic:\n'+diagnostic.slice(-6000)],{timeout:480000});
+    await run('codex',['exec','--sandbox','workspace-write','Fix the reported validation problem without changing existing tests or any files outside src/**/*.ts, src/**/*.tsx or new tests/**/*.test.ts. No package changes. Keep requested behavior. Diagnostic:\n'+diagnostic.slice(-6000)],{timeout:240000});
     paths=await changed();
     for(const [name,bin,args] of checks){safeLog('Rechecking '+name);await run(bin,args,{timeout:420000});}
   }
   paths=await changed();
   const diff=await gitDiff(paths);
   stage='review';
-  safeLog('Gemini independently reviewing code changes');
-  const review=await run('agy',['-p','You are a strict independent code reviewer. Evaluate adherence to the task, regression risk, obvious security problems, and whether tests appear meaningful. First line EXACTLY PASS or FAIL. Then brief reason. Do not edit any files. TASK:\n'+task+'\nCLAUDE PLAN:\n'+planResult.result+'\nPATCH:\n'+diff],{timeout:240000});
-  const verdict=review.trim().split(/\r?\n/)[0].replace(/[^a-z]/gi,'').toUpperCase();
-  if(verdict!=='PASS')throw Error('Gemini review rejected or returned ambiguous verdict');
+  safeLog(route.reviewer+' independently reviewing code changes');
+  const review=await runReviewer({
+    provider:route.reviewer,run,cwd,
+    prompt:'You are a strict independent code reviewer. Evaluate adherence to the task, regression risk, obvious security problems, and whether tests appear meaningful. First line EXACTLY PASS or FAIL. Then brief reason. Do not edit any files. TASK:\\n'+task+'\\nCONTROL TOWER PLAN:\\n'+planResult.result+'\\nPATCH:\\n'+diff
+  });
+  const verdict=parseReviewVerdict(review);
+  if(verdict!=='PASS')throw Error('Independent review rejected task');
   paths=await changed();
-  safeLog('Gemini review PASSED');
-  await writeFile(join(process.cwd(),'.private-task-result.json'),JSON.stringify({id,paths}));
+  safeLog(route.reviewer+' independent review PASSED');
+  await writeFile(join(process.cwd(),'.private-task-result.json'),JSON.stringify({id,paths,route:createRouteMetadata(route)}));
   safeLog('Validated private change ready for PR publishing');
 }catch(e){
   console.error('RESULT: FAILED during '+stage+' ('+String(e.message).replace(/[^a-zA-Z0-9 _.()/-]/g,'').slice(0,160)+')');
