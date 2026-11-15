@@ -24,7 +24,7 @@ jobs:
             exit 1
           fi
           set +e
-          claude -p "Reply with exactly OK." --output-format stream-json --verbose --max-turns 1 > "$RUNNER_TEMP/claude-events.jsonl" 2> "$RUNNER_TEMP/claude-stderr.txt"
+          claude -p "Reply with exactly OK." --output-format stream-json --verbose --max-turns 1 --debug-file "$RUNNER_TEMP/claude-debug.txt" > "$RUNNER_TEMP/claude-events.jsonl" 2> "$RUNNER_TEMP/claude-stderr.txt"
           rc=$?
           set -e
           CLAUDE_RC="$rc" python3 - <<'PY'
@@ -32,6 +32,7 @@ jobs:
           tmp = pathlib.Path(os.environ["RUNNER_TEMP"])
           raw = (tmp/"claude-events.jsonl").read_text(errors="replace")[:300000]
           err = (tmp/"claude-stderr.txt").read_text(errors="replace")[:100000]
+          debug = (tmp/"claude-debug.txt").read_text(errors="replace")[:600000] if (tmp/"claude-debug.txt").exists() else ""
           events = []
           for line in raw.splitlines()[:1000]:
               try:
@@ -60,15 +61,18 @@ jobs:
                       v = obj.get(name)
                       if str(v) in ("400", "401", "403", "404", "429", "500", "502", "503"):
                           status_values.append(str(v))
-          combined = raw + "\n" + err
+          combined = raw + "\n" + err + "\n" + debug
+          print("DIAG: DEBUG_FILE_PRESENT=" + str(bool(debug)))
           for code in ("400", "401", "403", "404", "429", "500", "502", "503"):
-              if re.search(r"(?:API Error:|HTTP|status[:= ]+)\s*" + code + r"(?!\d)", combined, re.I):
+              if re.search(r"(?:API Error:|HTTP(?: status)?|status(?: code)?[:= ]+)\s*" + code + r"(?!\d)", combined, re.I):
                   status_values.append(code)
           status_values = list(dict.fromkeys(status_values))
           if status_values:
               print("DIAG: API_HTTP_STATUS=" + ",".join(status_values))
           labels = [
-              ("OAUTH_TOKEN_INVALID", r"oauth access token is invalid|invalid oauth token|authentication_failed"),
+              ("OAUTH_TOKEN_INVALID", r"oauth access token is invalid|invalid oauth token|authentication_failed|invalid bearer token"),
+              ("OAUTH_TOKEN_EXPIRED", r"oauth access token has expired|token expired|token has expired"),
+              ("OAUTH_TOKEN_REVOKED", r"token.{0,20}revoked"),
               ("LOGIN_REQUIRED", r"not logged in|please log in|login required"),
               ("SUBSCRIPTION_OR_RATE_LIMIT", r"rate limit|usage limit|limit reached|limit exceeded|usage exhausted"),
               ("MODEL_UNAVAILABLE", r"model.{0,30}(not found|does not exist|not available|access denied)"),
