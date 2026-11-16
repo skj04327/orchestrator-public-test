@@ -7,6 +7,7 @@ import { runPlanner, runReviewer, parseReviewVerdict } from './agent-backends.mj
 import { createAuditLedger, writePrivateAuditReport } from './audit-ledger.mjs';
 import { shouldAttemptRepair } from './retry-policy.mjs';
 import { plannerContract, parseWorkplan, assertExecutableWorkplan, makeCodePrompt } from './workpack-planner.mjs';
+import { loadPublicReferences, findTaskImage, describeTaskImage, buildReferenceContext } from './reference-gateway.mjs';
 const cwd=join(process.cwd(),'private-game');
 const id=process.env.TASK_ID;
 if (!/^[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9]+$/.test(id||'')) throw Error('Invalid task ID');
@@ -114,12 +115,24 @@ try{
   if(start)throw Error('Source checkout is not clean');
   safeLog('Install existing project dependencies');
   await observed('intake','system',()=>run('npm',['ci','--no-audit','--no-fund'],{timeout:360000}));
+  // Only the user explicitly supplies public HTTPS URLs or a private screenshot.
+  // Model-generated links never trigger network calls. Sources are untrusted data.
+  stage='references';
+  const referenceRoot=join(process.cwd(),'task-private');
+  const publicReferences=await loadPublicReferences(referenceRoot,id);
+  const referenceImage=await findTaskImage(referenceRoot,id);
+  let imageDescription='';
+  if(referenceImage){
+    imageDescription=await observed('plan','codex',()=>describeTaskImage(referenceImage,run));
+  }
+  const referenceContext=buildReferenceContext(publicReferences,imageDescription);
+  safeLog('REFERENCE_INPUTS public='+publicReferences.length+' image='+(referenceImage?'yes':'no'));
   const sourceRules='Read-only initial repo baseline. Respect current branch, existing feature owners, and project directions. Never edit existing tests, workflow, package files, docs, lock files, git config, or assets. Only modify src/**/*.ts or src/**/*.tsx and ADD new tests/**/*.test.ts. Do not run git commands that commit or push. Do not install dependencies. No file deletion. No deployment or API spending. Keep changes small and relevant.';
   stage='planning';
   safeLog('Control tower '+route.controller+' decomposing private task');
   const planText=await observed('plan',route.controller,()=>runPlanner({
     provider:route.controller,run,cwd,
-    prompt:plannerContract(task)+'\\nPlanning is read-only; inspect actual code. Task:\\n'+task
+    prompt:plannerContract(task)+'\\nPlanning is read-only; inspect actual code. Task:\\n'+task+'\\n\\n'+referenceContext
   }));
   if((await run('git',['status','--porcelain','--untracked-files=all'])).trim())
     throw Error('Planning unexpectedly modified repository');
@@ -138,7 +151,7 @@ try{
     safeLog('Codex workpack '+pack.id+' of '+codePacks.length);
     await observed('implementation','codex',()=>run('codex',[
       'exec','--sandbox','workspace-write',
-      makeCodePrompt({task,workpack:pack,index:i+1,total:codePacks.length,sourceRules})
+      makeCodePrompt({task,workpack:pack,index:i+1,total:codePacks.length,sourceRules})+'\\n\\n'+referenceContext
     ],{timeout:240000}),{workpackId:pack.id});
     // Detect disallowed changes as soon as a workpack returns; do not allow
     // later workers to repair or bury unsafe changes.
@@ -189,7 +202,7 @@ try{
   await observed('review',route.reviewer,async()=>{
     const review=await runReviewer({
     provider:route.reviewer,run,cwd,
-    prompt:'You are a strict independent code reviewer. Evaluate adherence to the task, regression risk, obvious security problems, and whether tests appear meaningful. First line EXACTLY PASS or FAIL. Then brief reason. Do not edit any files. TASK:\\n'+task+'\\nCONTROL TOWER WORKPACKS:\\n'+JSON.stringify(workplan.workpacks)+'\\nPATCH:\\n'+diff
+    prompt:'You are a strict independent code reviewer. Evaluate adherence to the task, regression risk, obvious security problems, and whether tests appear meaningful. First line EXACTLY PASS or FAIL. Then brief reason. Do not edit any files. TASK:\\n'+task+'\\nCONTROL TOWER WORKPACKS:\\n'+JSON.stringify(workplan.workpacks)+'\\nREFERENCE DATA:\\n'+referenceContext+'\\nPATCH:\\n'+diff
     });
     if(parseReviewVerdict(review)!=='PASS')throw Error('Independent review rejected task');
   });
