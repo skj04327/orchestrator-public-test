@@ -5,7 +5,7 @@ const MAX_PACKS=4;
 const MAX_CODE=3;
 const PLAN_VERSION=1;
 const PATH=/^(?:src\/(?!assets\/)[a-zA-Z0-9_./-]+\.(?:ts|tsx)|tests\/[a-zA-Z0-9_./-]+\.test\.ts)$/;
-const IMG=/\b(image|images|portrait|sprite|sprites|texture|textures|illustration|illustrations|artwork|graphics|icon|icons|visual assets)\b|이미지|그림|초상화|일러스트|스프라이트|텍스처|삽화|아이콘|캐릭터\s*(?:이미지|그림)/i;
+const IMG=/\b(?:images?|portraits?|sprites?|textures?|illustrations?|artwork|graphics|icons?|visual assets)\b|이미지|그림|초상화|일러스트|스프라이트|텍스처|삽화|아이콘|캐릭터\s*(?:이미지|그림)/i;
 const clean=(s,min,max)=>typeof s==='string'&&s.trim().length>=min&&s.length<=max;
 export const WORKPLAN_VERSION=PLAN_VERSION;
 export const MAX_CODE_WORKPACKS=MAX_CODE;
