@@ -3,6 +3,7 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { readonlyClaudeToolFlags } from './reference-mcp-config.mjs';
 const MAX_PLAN=12000;
 const MAX_REVIEW=18000;
 function bounded(v,max){if(typeof v!=='string'||!v.trim()||v.length>max)throw Error('Model result is absent or too long');return v.trim();}
@@ -11,9 +12,9 @@ function parseClaude(raw){
   if(parsed.is_error||typeof parsed.result!=='string')throw Error('Claude CLI reported invalid result');
   return parsed.result;
 }
-export async function runPlanner({provider,prompt,run,cwd}){
+export async function runPlanner({provider,prompt,run,cwd,mcpConfig=null}){
   if(provider==='claude'){
-    const raw=await run('claude',['-p',prompt,'--output-format','json','--max-turns','5','--allowedTools','Read,Glob,Grep'],{cwd,timeout:180000});
+    const raw=await run('claude',['-p',prompt,'--output-format','json','--max-turns','5',...readonlyClaudeToolFlags(mcpConfig),'--allowedTools',mcpConfig?'Read,Glob,Grep,mcp__goryeo_refs__list_references,mcp__goryeo_refs__read_reference,mcp__goryeo_refs__image_observation':'Read,Glob,Grep'],{cwd,timeout:180000});
     return bounded(parseClaude(raw),MAX_PLAN);
   }
   if(provider==='gemini')return bounded(await run('agy',['-p',prompt+'\nDo not modify any files.'],{cwd,timeout:180000}),MAX_PLAN);
@@ -27,10 +28,10 @@ export async function runPlanner({provider,prompt,run,cwd}){
   }
   throw Error('Unsupported planning provider');
 }
-export async function runReviewer({provider,prompt,run,cwd}){
+export async function runReviewer({provider,prompt,run,cwd,mcpConfig=null}){
   if(provider==='gemini')return bounded(await run('agy',['-p',prompt],{cwd,timeout:240000}),MAX_REVIEW);
   if(provider==='claude'){
-    const raw=await run('claude',['-p',prompt,'--output-format','json','--max-turns','1','--allowedTools','Read,Glob,Grep'],{cwd,timeout:240000});
+    const raw=await run('claude',['-p',prompt,'--output-format','json','--max-turns','3',...readonlyClaudeToolFlags(mcpConfig),'--allowedTools',mcpConfig?'Read,Glob,Grep,mcp__goryeo_refs__list_references,mcp__goryeo_refs__read_reference,mcp__goryeo_refs__image_observation':'Read,Glob,Grep'],{cwd,timeout:240000});
     return bounded(parseClaude(raw),MAX_REVIEW);
   }
   if(provider==='codex')throw Error('Codex reviewer would not be independent of Codex developer');
