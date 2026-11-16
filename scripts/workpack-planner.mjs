@@ -11,7 +11,11 @@ export const WORKPLAN_VERSION=PLAN_VERSION;
 export const MAX_CODE_WORKPACKS=MAX_CODE;
 export function requiresImageGeneration(task){
   if(!clean(task,1,2500))throw Error('Invalid task');
-  return IMG.test(task);
+  // Merely saying "look at this image" is image READING, not generation.
+  if(!IMG.test(task))return false;
+  const KR=/(?:이미지|그림|초상화|일러스트|스프라이트|텍스처|아이콘|캐릭터\s*그림).{0,36}(?:생성|제작|만들|그려|그리|추가|출력|넣어|그림으로)|(?:생성|제작|만들|그려|그리|출력).{0,36}(?:이미지|그림|초상화|일러스트|스프라이트|텍스처|아이콘)/i;
+  const EN=/\b(?:generate|create|draw|render|produce|make)\s+(?:(?:an?|some|new|original|several|50)\s+)?(?:images?|portraits?|sprites?|textures?|illustrations?|icons?)\b|\b(?:images?|portraits?|sprites?|textures?|illustrations?|icons?)\b.{0,32}\b(?:generate|create|draw|render|produce|make|add)\b/i;
+  return KR.test(task)||EN.test(task);
 }
 export function plannerContract(task){
   if(!clean(task,1,2500))throw Error('Invalid task');
