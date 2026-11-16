@@ -1,0 +1,46 @@
+name: Safe reference gateway and read-only MCP (no secrets)
+on:
+  push:
+    branches: [feature/safe-reference-tools-v1]
+  pull_request:
+    paths:
+      - scripts/reference-*
+      - scripts/agent-backends*
+      - scripts/workpack-planner*
+      - scripts/execute-private-task.mjs
+      - scripts/test-fixtures/**
+      - scripts/orchestrator-offline-e2e.test.mjs
+      - termux/ai
+      - .github/workflows/ci-reference-gateway.yml
+permissions:
+  contents: read
+jobs:
+  reference-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Syntax and Termux shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check scripts/reference-gateway.mjs
+          node --check scripts/reference-mcp-server.mjs
+          node --check scripts/reference-mcp-config.mjs
+          node --check scripts/agent-backends.mjs
+          node --check scripts/execute-private-task.mjs
+          bash -n termux/ai
+      - name: Offline security, image, MCP protocol and end-to-end tests
+        env:
+          ANTHROPIC_API_KEY: ""
+          OPENAI_API_KEY: ""
+          GEMINI_API_KEY: ""
+          GOOGLE_API_KEY: ""
+          CLAUDE_CODE_OAUTH_TOKEN: ""
+        run: |
+          node --test scripts/reference-gateway.test.mjs scripts/reference-mcp.test.mjs scripts/agent-backends.test.mjs scripts/workpack-planner.test.mjs scripts/orchestrator-offline-e2e.test.mjs

@@ -24,6 +24,10 @@ if(name==='agy'){
   else console.log('PASS\nFixture review');
   process.exit(0);
 }
+if(name==='codex'&&args.includes('--image')){
+  console.log('A reference village with rows of houses and a river.');
+  process.exit(0);
+}
 if(name==='codex'){
   const dir=process.env.MOCK_GAME_ROOT;
   const file=pack==='P2'?'generated-two.ts':'generated-one.ts';

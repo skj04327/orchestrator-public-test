@@ -7,6 +7,8 @@ import { runPlanner, runReviewer, parseReviewVerdict } from './agent-backends.mj
 import { createAuditLedger, writePrivateAuditReport } from './audit-ledger.mjs';
 import { shouldAttemptRepair } from './retry-policy.mjs';
 import { plannerContract, parseWorkplan, assertExecutableWorkplan, makeCodePrompt } from './workpack-planner.mjs';
+import { loadPublicReferences, findTaskImage, describeTaskImage, buildReferenceContext } from './reference-gateway.mjs';
+import { createReadonlyMcpSession } from './reference-mcp-config.mjs';
 const cwd=join(process.cwd(),'private-game');
 const id=process.env.TASK_ID;
 if (!/^[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9]+$/.test(id||'')) throw Error('Invalid task ID');
@@ -20,6 +22,7 @@ console.log('STATUS: ROUTE '+JSON.stringify(createRouteMetadata(route)));
 const ledger=createAuditLedger(id);
 const auditDir=process.env.ORCHESTRATOR_AUDIT_DIR;
 let finalStatus='failed';
+let mcpSession=null;
 function run(bin,args,opts={}) {
   return new Promise((resolve,reject)=>{
     let out='',err='',outputBytes=0,limitReason=null,settled=false;
@@ -114,12 +117,26 @@ try{
   if(start)throw Error('Source checkout is not clean');
   safeLog('Install existing project dependencies');
   await observed('intake','system',()=>run('npm',['ci','--no-audit','--no-fund'],{timeout:360000}));
+  // Only the user explicitly supplies public HTTPS URLs or a private screenshot.
+  // Model-generated links never trigger network calls. Sources are untrusted data.
+  stage='references';
+  const referenceRoot=join(process.cwd(),'task-private');
+  const publicReferences=await loadPublicReferences(referenceRoot,id);
+  const referenceImage=await findTaskImage(referenceRoot,id);
+  let imageDescription='';
+  if(referenceImage){
+    imageDescription=await observed('plan','codex',()=>describeTaskImage(referenceImage,run));
+  }
+  const referenceContext=buildReferenceContext(publicReferences,imageDescription);
+  // No arbitrary third-party MCP servers. Only this local, pre-sanitized, read-only snapshot.
+  if(referenceContext)mcpSession=await createReadonlyMcpSession(publicReferences,imageDescription);
+  safeLog('REFERENCE_INPUTS public='+publicReferences.length+' image='+(referenceImage?'yes':'no'));
   const sourceRules='Read-only initial repo baseline. Respect current branch, existing feature owners, and project directions. Never edit existing tests, workflow, package files, docs, lock files, git config, or assets. Only modify src/**/*.ts or src/**/*.tsx and ADD new tests/**/*.test.ts. Do not run git commands that commit or push. Do not install dependencies. No file deletion. No deployment or API spending. Keep changes small and relevant.';
   stage='planning';
   safeLog('Control tower '+route.controller+' decomposing private task');
   const planText=await observed('plan',route.controller,()=>runPlanner({
-    provider:route.controller,run,cwd,
-    prompt:plannerContract(task)+'\\nPlanning is read-only; inspect actual code. Task:\\n'+task
+    provider:route.controller,run,cwd,mcpConfig:mcpSession?.configPath??null,
+    prompt:plannerContract(task)+'\\nPlanning is read-only; inspect actual code. Task:\\n'+task+'\\n\\n'+referenceContext
   }));
   if((await run('git',['status','--porcelain','--untracked-files=all'])).trim())
     throw Error('Planning unexpectedly modified repository');
@@ -138,7 +155,7 @@ try{
     safeLog('Codex workpack '+pack.id+' of '+codePacks.length);
     await observed('implementation','codex',()=>run('codex',[
       'exec','--sandbox','workspace-write',
-      makeCodePrompt({task,workpack:pack,index:i+1,total:codePacks.length,sourceRules})
+      makeCodePrompt({task,workpack:pack,index:i+1,total:codePacks.length,sourceRules})+'\\n\\n'+referenceContext
     ],{timeout:240000}),{workpackId:pack.id});
     // Detect disallowed changes as soon as a workpack returns; do not allow
     // later workers to repair or bury unsafe changes.
@@ -188,8 +205,8 @@ try{
   safeLog(route.reviewer+' independently reviewing code changes');
   await observed('review',route.reviewer,async()=>{
     const review=await runReviewer({
-    provider:route.reviewer,run,cwd,
-    prompt:'You are a strict independent code reviewer. Evaluate adherence to the task, regression risk, obvious security problems, and whether tests appear meaningful. First line EXACTLY PASS or FAIL. Then brief reason. Do not edit any files. TASK:\\n'+task+'\\nCONTROL TOWER WORKPACKS:\\n'+JSON.stringify(workplan.workpacks)+'\\nPATCH:\\n'+diff
+    provider:route.reviewer,run,cwd,mcpConfig:mcpSession?.configPath??null,
+    prompt:'You are a strict independent code reviewer. Evaluate adherence to the task, regression risk, obvious security problems, and whether tests appear meaningful. First line EXACTLY PASS or FAIL. Then brief reason. Do not edit any files. TASK:\\n'+task+'\\nCONTROL TOWER WORKPACKS:\\n'+JSON.stringify(workplan.workpacks)+'\\nREFERENCE DATA:\\n'+referenceContext+'\\nPATCH:\\n'+diff
     });
     if(parseReviewVerdict(review)!=='PASS')throw Error('Independent review rejected task');
   });
@@ -204,6 +221,12 @@ try{
   console.error('RESULT: FAILED during '+stage+' ('+String(e.message).replace(/[^a-zA-Z0-9 _.()/-]/g,'').slice(0,160)+')');
   process.exitCode=1;
 }finally{
+  if(mcpSession){
+    try{await mcpSession.cleanup();}catch{
+      console.error('RESULT: PRIVATE_REFERENCE_CLEANUP_FAILED');
+      process.exitCode=1;
+    }
+  }
   if(auditDir){
     try{
       await writePrivateAuditReport(auditDir,ledger.snapshot({status:finalStatus}));

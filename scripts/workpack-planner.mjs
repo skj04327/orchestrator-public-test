@@ -5,13 +5,21 @@ const MAX_PACKS=4;
 const MAX_CODE=3;
 const PLAN_VERSION=1;
 const PATH=/^(?:src\/(?!assets\/)[a-zA-Z0-9_./-]+\.(?:ts|tsx)|tests\/[a-zA-Z0-9_./-]+\.test\.ts)$/;
-const IMG=/\b(image|images|portrait|sprite|sprites|texture|textures|illustration|illustrations|artwork|graphics|icon|icons|visual assets)\b|이미지|그림|초상화|일러스트|스프라이트|텍스처|삽화|아이콘|캐릭터\s*(?:이미지|그림)/i;
+const IMG=/\b(?:images?|portraits?|sprites?|textures?|illustrations?|artwork|graphics|icons?|visual assets)\b|이미지|그림|초상화|일러스트|스프라이트|텍스처|삽화|아이콘|캐릭터\s*(?:이미지|그림)/i;
 const clean=(s,min,max)=>typeof s==='string'&&s.trim().length>=min&&s.length<=max;
 export const WORKPLAN_VERSION=PLAN_VERSION;
 export const MAX_CODE_WORKPACKS=MAX_CODE;
 export function requiresImageGeneration(task){
   if(!clean(task,1,2500))throw Error('Invalid task');
-  return IMG.test(task);
+  // Merely saying "look at this image" is image READING, not generation.
+  if(!IMG.test(task))return false;
+  const referenceCue=/(?:이미지|그림|초상화|일러스트|스프라이트|텍스처|아이콘)(?:를|을|와|과)?\s*(?:보고|읽고|참고|분석|비교|활용)/i;
+  const explicitAsset=/\b(?:generate|create|draw|render)\s+(?:images?|portraits?|sprites?)\b|(?:이미지|초상화|스프라이트|일러스트)(?:\s*\d+\s*장)?\s*(?:생성|제작|그려|만들|추가)/i;
+  if(referenceCue.test(task)&&!explicitAsset.test(task))return false;
+
+  const KR=/(?:이미지|그림|초상화|일러스트|스프라이트|텍스처|아이콘|캐릭터\s*그림).{0,36}(?:생성|제작|만들|그려|그리|추가|출력|넣어|그림으로)|(?:생성|제작|만들|그려|그리|출력).{0,36}(?:이미지|그림|초상화|일러스트|스프라이트|텍스처|아이콘)/i;
+  const EN=/\b(?:generate|create|draw|render|produce|make)\s+(?:(?:an?|some|new|original|several|50)\s+)?(?:images?|portraits?|sprites?|textures?|illustrations?|icons?)\b|\b(?:images?|portraits?|sprites?|textures?|illustrations?|icons?)\b.{0,32}\b(?:generate|create|draw|render|produce|make|add)\b/i;
+  return KR.test(task)||EN.test(task);
 }
 export function plannerContract(task){
   if(!clean(task,1,2500))throw Error('Invalid task');

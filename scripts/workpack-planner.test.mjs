@@ -56,3 +56,17 @@ test('rejects unbounded, ambiguous and unsupported workpack types',()=>{
 test('does not infer images from a plain character data request',()=>{
   assert.equal(requiresImageGeneration(task),false);
 });
+
+
+test('image analysis and reference screenshots do not trigger image generation',()=>{
+  for(const prompt of [
+    '첨부한 이미지를 읽고 한옥마을 위치를 분석해줘',
+    '이 위성사진을 참고해서 길 배치 코드를 수정해줘',
+    '지도 화면 이미지를 보고 더 자연스럽게 만들어줘'
+  ])assert.equal(requiresImageGeneration(prompt),false);
+  for(const prompt of [
+    '인물 초상화 이미지 50장 만들어서 게임에 추가',
+    '마을 스프라이트를 생성해줘',
+    'Generate original portraits'
+  ])assert.equal(requiresImageGeneration(prompt),true);
+});

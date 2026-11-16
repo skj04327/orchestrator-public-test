@@ -31,3 +31,16 @@ test('empty or oversized model result is rejected',async()=>{
   await assert.rejects(runPlanner({provider:'gemini',prompt:'x',run:async()=>''}));
   await assert.rejects(runPlanner({provider:'claude',prompt:'x',run:async()=>JSON.stringify({is_error:true,result:'oops'})}));
 });
+
+
+test('Claude receives only a strict vetted local MCP config when explicitly staged',async()=>{
+  let args;
+  const text=await runPlanner({provider:'claude',prompt:'plan',mcpConfig:'/tmp/mock-refs.json',
+    run:async(bin,argv)=>{args=argv;return JSON.stringify({result:'Valid plan',is_error:false})}});
+  assert.equal(text,'Valid plan');
+  assert.ok(args.includes('--strict-mcp-config'));
+  assert.ok(args.includes('--mcp-config'));
+  assert.ok(args.includes('/tmp/mock-refs.json'));
+  assert.match(args[args.indexOf('--allowedTools')+1],/mcp__goryeo_refs__read_reference/);
+  assert.ok(!args.includes('--dangerously-skip-permissions'));
+});
