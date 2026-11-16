@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "checkedAt": "2026-11-16T10:46:14.684189+00:00",
+  "currentPublicSubscriptionCiAllowed": false,
+  "sources": [
+    {
+      "provider": "codex",
+      "url": "https://developers.openai.com/codex/noninteractive",
+      "retrievedUrl": "https://learn.chatgpt.com/docs/non-interactive-mode",
+      "httpStatus": 200,
+      "sha256OfRetrievedHtml": "f7bb3459608d9ce8535113140aa20a0f75cd09fad3ad378c20fc45839e31dcac",
+      "excerpt": "Do not use this workflow for public or open-source repositories.",
+      "scope": "ChatGPT-managed auth in CI/CD (advanced)",
+      "decision": "Block account-auth workflow in current public orchestrator; private CI auth lifecycle remains unverified."
+    },
+    {
+      "provider": "claude",
+      "url": "https://github.com/anthropics/claude-code-action/blob/main/docs/setup.md",
+      "githubBlobSha": "695f8af9f29085fe9fcf0dfdd206489ede765bde",
+      "excerpt": "Pro and Max users can generate this by running `claude setup-token` locally",
+      "decision": "Official action documents OAuth mechanism, not verification of this runtime/account/billing/data scope. code.claude.com docs returned HTTP 403."
+    },
+    {
+      "provider": "gemini",
+      "url": "https://geminicli.com/docs/get-started/authentication/",
+      "httpStatus": 200,
+      "sha256OfRetrievedHtml": "7c39f7d2e6d090f27d3235eeb43a1888976d1c947e4565bab140e33243d1dc38",
+      "excerpt": "Headless mode will use your existing authentication method, if an existing authentication credential is cached.",
+      "decision": "Documented Gemini CLI mechanism; do not transfer this finding to Antigravity agy or assume provider CI/data approval."
+    },
+    {
+      "provider": "agy",
+      "url": "https://antigravity.google/cli/install.sh",
+      "httpStatus": 200,
+      "sha256OfRetrievedInstaller": "62966c07365423bd4dc209355060744058fb30d60f5323e2d360e39de64e5042",
+      "decision": "Official installer, SHA-512 release and version/help verified. Google AI Pro subscription CI/OAuth reuse policy not established."
+    }
+  ]
+}

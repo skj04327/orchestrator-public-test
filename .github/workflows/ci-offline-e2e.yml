@@ -18,6 +18,9 @@ on:
       - scripts/container-tar*
       - scripts/worker-entry.mjs
       - scripts/run-protected-task.mjs
+      - scripts/subscription-policy*
+      - scripts/check-subscription-policy.mjs
+      - scripts/cli-runtime-probe*
       - docker/worker/**
       - .github/workflows/task-intake.yml
       - .github/workflows/ci-offline-e2e.yml

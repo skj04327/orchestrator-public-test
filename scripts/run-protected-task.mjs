@@ -4,9 +4,13 @@ import {join,dirname,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {contextFromEnv} from './private-handoff.mjs';
 import {runProtectedTask} from './protected-worker.mjs';
+import {assertSubscriptionCi} from './subscription-policy.mjs';
 const abort=new AbortController();
 process.once('SIGTERM',()=>abort.abort());process.once('SIGINT',()=>abort.abort());
 try{
+  // Must run before decoding any subscriber credential or starting Docker.
+  assertSubscriptionCi({repository:process.env.GITHUB_REPOSITORY,
+    visibility:process.env.ORCHESTRATOR_REPOSITORY_VISIBILITY,providers:['claude','codex','agy']});
   if(process.env.PRIVATE_GAME_WRITE_TOKEN||!process.env.RUNNER_TEMP||!process.env.GITHUB_OUTPUT)
     throw Error('Invalid trusted host context');
   const decode=name=>{
