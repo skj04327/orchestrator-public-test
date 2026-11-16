@@ -17,7 +17,11 @@ test('write secrets occur only in fresh trusted jobs; public artifacts have one 
   // A mutable exporter cannot guarantee public-artifact confidentiality yet.
   // No repository variable may enable this staged implementation.
   assert.match(text,/prepare-handoff:[\s\S]*?if: >-\n\s+false &&/);
-  assert.match(worker,/path: \.private-handoff.enc\n/);
+  assert.match(worker,/path: \$\{\{ runner.temp \}\}\/protected-handoff\/bundle.enc\n/);
+  assert.match(worker,/run: node scripts\/run-protected-task.mjs/);
+  assert.ok(!worker.includes('run: node scripts/execute-private-task.mjs'));
+  assert.ok(!worker.includes('run: node scripts/seal-private-task.mjs'));
+  assert.ok(!worker.includes('curl ')&&!worker.includes('npm install'));
   assert.match(worker,/retention-days: 1/);
   assert.match(worker,/include-hidden-files: true/);
   assert.match(publisher,/EXECUTION_OUTCOME: \$\{\{ needs.task-execution.result \}\}/);

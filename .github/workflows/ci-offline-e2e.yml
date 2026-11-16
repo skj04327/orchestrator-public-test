@@ -14,6 +14,11 @@ on:
       - scripts/seal-private-task.mjs
       - scripts/prepare-private-handoff.mjs
       - scripts/publish-workflow.test.mjs
+      - scripts/protected-worker*
+      - scripts/container-tar*
+      - scripts/worker-entry.mjs
+      - scripts/run-protected-task.mjs
+      - docker/worker/**
       - .github/workflows/task-intake.yml
       - .github/workflows/ci-offline-e2e.yml
 permissions:
@@ -21,7 +26,7 @@ permissions:
 jobs:
   public-fixture:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,4 +46,11 @@ jobs:
           GEMINI_API_KEY: ""
           GOOGLE_API_KEY: ""
           CLAUDE_CODE_OAUTH_TOKEN: ""
-        run: node --test scripts/orchestrator-offline-e2e.test.mjs scripts/private-handoff.test.mjs scripts/private-task-bundle.test.mjs scripts/publish-workflow.test.mjs
+        run: node --test scripts/*.test.mjs
+      - name: Build pinned public containment foundation (no auth or game data)
+        run: docker build --tag orchestrator-containment-fixture:ci docker/worker
+      - name: Real container attack regression (network disabled, synthetic inputs only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ORCHESTRATOR_TEST_IMAGE="$(docker image inspect orchestrator-containment-fixture:ci --format '{{.Id}}')" node --test scripts/protected-worker.docker-test.mjs
