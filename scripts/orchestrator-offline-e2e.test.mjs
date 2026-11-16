@@ -145,3 +145,31 @@ test('offline tampering: code changed after review cannot reach GitHub publisher
     assert.equal(await exists(join(f.root,'.private-task-pr.json')),false);
   }finally{await rm(f.root,{recursive:true,force:true});}
 });
+
+
+test('offline opt-in references: fetch only allowlisted public page and analyze private PNG without publishing media',async()=>{
+  const f=await fixture('위성사진을 참고해서 게임 마을 도로 배치 코드를 개선해줘',plan);
+  try{
+    const privateRoot=join(f.root,'task-private','docs','orchestrator');
+    await mkdir(join(privateRoot,'references'),{recursive:true});
+    await mkdir(join(privateRoot,'media'),{recursive:true});
+    await writeFile(join(privateRoot,'references',ID+'.json'),
+      JSON.stringify({version:1,urls:['https://en.wikipedia.org/wiki/Goryeo']}));
+    // Synthetic PNG header for the mock CLI only; gateway checks dimensions and magic bytes.
+    const png=Buffer.alloc(33);
+    Buffer.from('89504e470d0a1a0a','hex').copy(png);
+    png.writeUInt32BE(13,8);png.write('IHDR',12);
+    png.writeUInt32BE(400,16);png.writeUInt32BE(200,20);
+    await writeFile(join(privateRoot,'media',ID+'.png'),png);
+    const run=await cmd(process.execPath,['--import',MOCK_FETCH,RUNNER],{cwd:f.root,env:f.env});
+    assert.equal(run.code,0,run.out+'\n'+run.err);
+    assert.match(run.out,/REFERENCE_INPUTS public=1 image=yes/);
+    assert.ok(!run.out.includes('Public reference history'));
+    const calls=await readLines(f.callLog);
+    assert.equal(calls.filter(c=>c.tool==='codex'&&c.kind==='generic').length,1);
+    assert.deepEqual(calls.filter(c=>c.tool==='codex'&&c.kind!=='generic').map(c=>c.kind),['P1','P2']);
+    const audit=await report(f);
+    assert.equal(audit.status,'passed');
+    assert.ok(audit.events.some(x=>x.stage==='plan'&&x.actor==='codex'&&x.status==='passed'));
+  }finally{await rm(f.root,{recursive:true,force:true});}
+});
