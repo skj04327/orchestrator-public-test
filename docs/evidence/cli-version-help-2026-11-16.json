@@ -1,0 +1,166 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-11-16T10:46:14.683516+00:00",
+  "diagnosticOnly": true,
+  "authenticatedInferenceAttempted": false,
+  "allFourCliVersionHelpObserved": true,
+  "combinedProductionImageVerified": false,
+  "note": "Separate credential-free network=none containers and read-only public package volumes; base image ID does not bind volume contents. No account, token usage, model ID or cost assertion.",
+  "packageArtifacts": [
+    {
+      "name": "@anthropic-ai/claude-code",
+      "version": "2.1.325",
+      "resolved": "https://registry.npmjs.org/@anthropic-ai/claude-code/-/claude-code-2.1.325.tgz",
+      "integrity": "sha512-OUxCb0sx734zJh9zGTP9oF01gZ44DCGFaw7hgD4byepjRRGyvHzgUOwC7dlCgVIljV6CiEVDjq+anY3GUvKFQw=="
+    },
+    {
+      "name": "@anthropic-ai/claude-code-linux-x64",
+      "version": "2.1.325",
+      "resolved": "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-2.1.325.tgz",
+      "integrity": "sha512-BqZzMvP/zgLLL34S+7OzbG+cyoFp7gwWHU5koVwsyMlTAz+0zZAmbY+UkzvtN2RXxp6AcMenbYIjQJxoXfUY3w=="
+    },
+    {
+      "name": "@google/gemini-cli",
+      "version": "0.68.0",
+      "resolved": "https://registry.npmjs.org/@google/gemini-cli/-/gemini-cli-0.68.0.tgz",
+      "integrity": "sha512-eq7AWY+YCijNGKVwyiRjN+GuOdXU/djuOZhX18p+HDmNyUqFdqH7C5V6vDJLl1uffhRPhGijePV+YvY8lymrbQ=="
+    },
+    {
+      "name": "@openai/codex",
+      "version": "0.169.0",
+      "resolved": "https://registry.npmjs.org/@openai/codex/-/codex-0.169.0.tgz",
+      "integrity": "sha512-KhzYlkKPxoNssR8CEm45IjqnFWn7UtlF4CiD3tOJPea51xBs7MaHy0UQG9GSbCqk6Lrjn5QdJDV0QD1/FgWlGw=="
+    },
+    {
+      "name": "@openai/codex-linux-x64",
+      "version": "0.169.0-linux-x64",
+      "resolved": "https://registry.npmjs.org/@openai/codex/-/codex-0.169.0-linux-x64.tgz",
+      "integrity": "sha512-o05NyAOCDygSPRo1yinzxvkRSdmsZyBD9E7mbpmjRanSfM8lypqWtQgEo4XfNkwhuCR2aFu8mlGOsQGFXVbVww=="
+    }
+  ],
+  "antigravityRelease": {
+    "version": "1.5.9",
+    "url": "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.9-4515810895593472/linux-x64/cli_linux_x64.tar.gz",
+    "sha512": "d01eb13ba7750eed18907f1ae8860864371e0ad9064415e8d033d22b4bd7b9b4e4c7f962058520b452d67db1c33163d9a889d55a7dffa159596ec6cd91a87b79"
+  },
+  "claudeAdditionalCommand": [
+    "claude",
+    "--max-turns",
+    "1",
+    "--help"
+  ],
+  "observations": [
+    {
+      "schemaVersion": 1,
+      "observedAt": "2026-11-16T10:38:57.492Z",
+      "imageId": "sha256:b774d993885c47eca14db241ba8cc7e5789235142f76e4a2a6a65ec350a1bac0",
+      "network": "none",
+      "credentialsProvided": false,
+      "diagnosticOnly": true,
+      "allProvidersChecked": false,
+      "results": [
+        {
+          "cli": "codex",
+          "cliVersion": "codex-cli 0.169.0",
+          "flags": {
+            "--sandbox": true,
+            "--image": true,
+            "--output-last-message": true
+          },
+          "authenticated": false,
+          "inferenceAttempted": false,
+          "subscriptionCiApproved": false,
+          "modelId": null,
+          "tokenUsage": null,
+          "cost": null
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "observedAt": "2026-11-16T10:44:10.826Z",
+      "imageId": "sha256:b774d993885c47eca14db241ba8cc7e5789235142f76e4a2a6a65ec350a1bac0",
+      "network": "none",
+      "credentialsProvided": false,
+      "diagnosticOnly": true,
+      "allProvidersChecked": false,
+      "publicPackageVolume": {
+        "readOnly": true,
+        "contentDigestVerified": false
+      },
+      "results": [
+        {
+          "cli": "claude",
+          "cliVersion": "2.1.325 (Claude Code)",
+          "flags": {
+            "--output-format": true,
+            "--max-turns": false,
+            "--allowedTools": true,
+            "--mcp-config": true,
+            "--strict-mcp-config": true
+          },
+          "authenticated": false,
+          "inferenceAttempted": false,
+          "subscriptionCiApproved": false,
+          "modelId": null,
+          "tokenUsage": null,
+          "cost": null,
+          "optionParsingVerified": true
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "observedAt": "2026-11-16T10:40:04.695Z",
+      "imageId": "sha256:6319fe419b517456a6f18fba26cbd560e6f09c896f56e387a28e7b577c402f84",
+      "network": "none",
+      "credentialsProvided": false,
+      "diagnosticOnly": true,
+      "allProvidersChecked": false,
+      "results": [
+        {
+          "cli": "agy",
+          "cliVersion": "1.5.9",
+          "flags": {
+            "-p": true,
+            "--print": true,
+            "--output-format": true,
+            "--sandbox": true
+          },
+          "authenticated": false,
+          "inferenceAttempted": false,
+          "subscriptionCiApproved": false,
+          "modelId": null,
+          "tokenUsage": null,
+          "cost": null
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "observedAt": "2026-11-16T10:40:43.694Z",
+      "imageId": "sha256:b774d993885c47eca14db241ba8cc7e5789235142f76e4a2a6a65ec350a1bac0",
+      "network": "none",
+      "credentialsProvided": false,
+      "diagnosticOnly": true,
+      "allProvidersChecked": false,
+      "results": [
+        {
+          "cli": "gemini",
+          "cliVersion": "0.68.0",
+          "flags": {
+            "--prompt": true,
+            "--output-format": true,
+            "--sandbox": true
+          },
+          "authenticated": false,
+          "inferenceAttempted": false,
+          "subscriptionCiApproved": false,
+          "modelId": null,
+          "tokenUsage": null,
+          "cost": null
+        }
+      ]
+    }
+  ]
+}

@@ -14,6 +14,8 @@ test('write secrets occur only in fresh trusted jobs; public artifacts have one 
   assert.match(publisher,/path: \$\{\{ runner.temp \}\}\/incoming-handoff/);
   assert.match(text,/ORCHESTRATOR_LIVE_POLICY_CONFIRMED/);
   assert.match(text,/ORCHESTRATOR_FREE_STORAGE_CONFIRMED/);
+  assert.match(text,/subscription-policy:[\s\S]*?run: node scripts\/check-subscription-policy.mjs/);
+  assert.match(text,/prepare-handoff:\n\s+needs: subscription-policy/);
   // A mutable exporter cannot guarantee public-artifact confidentiality yet.
   // No repository variable may enable this staged implementation.
   assert.match(text,/prepare-handoff:[\s\S]*?if: >-\n\s+false &&/);

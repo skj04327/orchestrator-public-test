@@ -24,7 +24,24 @@ concurrency:
   group: termux-task-intake
   cancel-in-progress: false
 jobs:
+  subscription-policy:
+    if: github.actor == 'skj04327' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check documented subscription CI scope before any secret job
+        env:
+          ORCHESTRATOR_REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+        run: node scripts/check-subscription-policy.mjs
   prepare-handoff:
+    needs: subscription-policy
     # HARD BLOCK: containment fixtures pass, but approved subscriber runtime,
     # provider/CI data policy, network limits and trusted validation are unfinished.
     # Repository variables cannot bypass this; remove only after reviewed verification.
@@ -103,6 +120,7 @@ jobs:
           # Must be an already loaded, immutable, policy-approved runtime image.
           # docker/worker is only the no-auth containment fixture foundation.
           ORCHESTRATOR_WORKER_IMAGE_ID: ${{ vars.ORCHESTRATOR_WORKER_IMAGE_ID }}
+          ORCHESTRATOR_REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
           HANDOFF_PUBLIC_KEY: ${{ needs.prepare-handoff.outputs.public_key }}
           CODEX_AUTH_JSON_B64: ${{ secrets.CODEX_AUTH_JSON_B64 }}
           ANTIGRAVITY_OAUTH_B64: ${{ secrets.ANTIGRAVITY_OAUTH_B64 }}

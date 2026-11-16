@@ -1,0 +1,13 @@
+# Subscription runtime policy and evidence plan
+
+Authority: user handoff Phase 1/7 and explicit continuation. Base PR #10 a8f7e98. No existing PR edits/merge, paid API/account setup or real LLM/game execution.
+
+Findings: official Codex non-interactive documentation says ChatGPT-managed CI/CD auth must not be used for public/open-source repositories. Current orchestrator is public. Claude official action setup documents Pro/Max setup-token OAuth, but broad runtime approval is not implied. Google Gemini CLI documents cached-auth headless use; existing agy is a distinct official Antigravity executable and its Google AI Pro CI scope remains unverified. Native agy manifest exists; do not conflate tools.
+
+Design: add a deterministic fail-closed subscription CI preflight before key preparation or secret decoding. It records only fixed reason codes and official source links. Public Codex account auth and unverified agy CI auth cannot be enabled through repository approval flags. Keep existing constant false. Independently build an account-free pinned CLI diagnostic image and run only version/help in network-disabled containers; never infer model IDs/token/cost/account permissions from CLI versions.
+
+Steps: (1) failing policy and workflow tests, then policy module/host entrypoint/workflow preflight; (2) official source/date/hash evidence and measured CLI help/version snapshot, diagnostic-only image/probe reproducibility; (3) whole existing suite + Docker containment regression + no-auth probes, independent review, new Draft stacked on #10.
+
+Review focus: current public repository identity overrides misleading visibility input; unknown context/providers fail closed; no secret read or Docker side effects on policy denial; API/provider fallbacks remain disallowed; no paid research providers; version/help does not count as authenticated runtime or documented policy approval. Source retrieval failures and partial support must be recorded.
+
+Execution record: policy gates and diagnostic probe implemented; general69/69 and real containment3/3 passed. Four actual public CLI version/help observations recorded without credentials/inference/network; Claude max-turns help parsing passed despite option not advertised. Combined image build failed CA trust/disk constraints, so separate read-only public volumes were used and no full-runtime success is claimed. Independent review found probe signal cleanup gap; AbortController propagation, uncancelled cleanup and regression tests address it. Official source hashes/quotes and detailed remaining work are in docs/subscription-runtime-policy-v1.md and docs/evidence. Live constant false remains; current public subscription execution independently denied before credential decode.
