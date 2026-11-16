@@ -5,9 +5,11 @@ import assert from 'node:assert/strict';
 import {mkdtemp,mkdir,writeFile,readFile,chmod,rm,access} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
+import {recipientKey} from './private-handoff.mjs';
 import {spawn} from 'node:child_process';
 
-const ID='20261115T121256Z-10360-7098';
+const ID='20261116T090000Z-123-456';
+const SEAL=resolve('scripts/seal-private-task.mjs');
 const RUNNER=resolve('scripts/execute-private-task.mjs');
 const PUBLISH=resolve('scripts/publish-private-task.mjs');
 const PERSIST=resolve('scripts/persist-private-audit.mjs');
@@ -58,7 +60,7 @@ async function fixture(task,workplan,{failTests=false}={}){
     MOCK_FAIL_TESTS:failTests?'1':'0',
     ORCHESTRATOR_AUDIT_DIR:join(root,'private-audit'),
     ORCHESTRATOR_ROUTING_MODE:'stable',ORCHESTRATOR_CONTROLLER:'auto',
-    PRIVATE_GAME_WRITE_TOKEN:'FIXTURE_TOKEN',
+    GITHUB_REPOSITORY:'skj04327/orchestrator-public-test',GITHUB_RUN_ID:'42',GITHUB_RUN_ATTEMPT:'1',GITHUB_SHA:'a'.repeat(40),
     ANTHROPIC_API_KEY:'',OPENAI_API_KEY:'',GEMINI_API_KEY:'',GOOGLE_API_KEY:''
   };
   for(const args of [
@@ -69,11 +71,72 @@ async function fixture(task,workplan,{failTests=false}={}){
     assert.equal(result.code,0,'Fixture git setup failed: '+result.err);
   }
   const head=(await cmd('git',['rev-parse','HEAD'],{cwd:privateGame,env})).out.trim();
-  return {root,env:{...env,MOCK_GIT_HEAD:head},callLog,fetchLog};
+  const context={repository:env.GITHUB_REPOSITORY,taskId:ID,runId:'42',runAttempt:'1',workflowSha:env.GITHUB_SHA};
+  const publicKey=recipientKey('FIXTURE_TOKEN',context).publicKey;
+  return {root,env:{...env,HANDOFF_PUBLIC_KEY:publicKey,MOCK_GIT_HEAD:head},callLog,fetchLog};
+}
+async function publish(f,{outcome='success',corrupt=false,trustedOutcome=outcome}={}){
+  const sealed=await cmd(process.execPath,[SEAL],{cwd:f.root,env:{...f.env,EXECUTION_OUTCOME:outcome}});
+  if(sealed.code!==0)return sealed;
+  const fresh=await mkdtemp(join(tmpdir(),'orchestrator-publisher-'));
+  try{
+    let bytes=await readFile(join(f.root,'.private-handoff.enc'));
+    if(corrupt){bytes=Buffer.from(bytes);bytes[bytes.length-1]^=1;}
+    await writeFile(join(fresh,'.private-handoff.enc'),bytes);
+    const pub=await cmd(process.execPath,['--import',MOCK_FETCH,PUBLISH],{cwd:fresh,
+      env:{...f.env,EXECUTION_OUTCOME:trustedOutcome,PRIVATE_GAME_WRITE_TOKEN:'FIXTURE_TOKEN',ORCHESTRATOR_AUDIT_DIR:join(fresh,'audit')}});
+    // Publisher must work with NO game checkout, git config, model CLI or task input.
+    assert.equal(await exists(join(fresh,'private-game')),false);
+    for(const name of ['.private-task-pr.json']){
+      if(await exists(join(fresh,name)))await writeFile(join(f.root,name),await readFile(join(fresh,name)));
+    }
+    return pub;
+  }finally{await rm(fresh,{recursive:true,force:true});}
 }
 const readLines=async path=>(await readFile(path,'utf8')).split('\n').filter(Boolean).map(x=>JSON.parse(x));
 const report=async f=>JSON.parse(await readFile(join(f.root,'private-audit',ID+'.json'),'utf8'));
 const exists=async path=>access(path).then(()=>true,()=>false);
+
+test('isolated publisher blocks corrupt transport and failed worker before any GitHub call',async()=>{
+  for(const outcome of ['success','failure']){
+    const f=await fixture('Synthetic harmless code task',plan);
+    try{
+      const run=await cmd(process.execPath,[RUNNER],{cwd:f.root,env:f.env});
+      assert.equal(run.code,0,run.out+'\n'+run.err);
+      const pub=await publish(f,{outcome,corrupt:outcome==='success'});
+      assert.equal(pub.code,1);
+      assert.equal((await readLines(f.fetchLog)).length,0);
+      assert.match(pub.err,/PUBLISH_FAILED/);
+    }finally{await rm(f.root,{recursive:true,force:true});}
+  }
+});
+test('trusted workflow outcome overrides a success claim inside encrypted payload',async()=>{
+  const f=await fixture('Synthetic harmless code task',plan);
+  try{
+    const run=await cmd(process.execPath,[RUNNER],{cwd:f.root,env:f.env});
+    assert.equal(run.code,0);
+    const pub=await publish(f,{trustedOutcome:'failure'});
+    assert.equal(pub.code,1);
+    assert.equal((await readLines(f.fetchLog)).length,0);
+  }finally{await rm(f.root,{recursive:true,force:true});}
+});
+test('publisher refuses stale base and existing-test overwrite before branch creation',async()=>{
+  for(const reason of ['stale','existing-test']){
+    const f=await fixture('Synthetic harmless code task',plan);
+    try{
+      if(reason==='existing-test')f.env.MOCK_ADD_TEST='1';
+      const run=await cmd(process.execPath,[RUNNER],{cwd:f.root,env:f.env});
+      assert.equal(run.code,0,run.out+'\n'+run.err);
+      if(reason==='stale')f.env.MOCK_GIT_HEAD='f'.repeat(40);
+      else f.env.MOCK_EXISTING_TEST='1';
+      const pub=await publish(f);
+      assert.equal(pub.code,1,pub.out+'\n'+pub.err);
+      const calls=await readLines(f.fetchLog);
+      assert.ok(calls.length>0);
+      assert.ok(calls.every(c=>c.method==='GET'));
+    }finally{await rm(f.root,{recursive:true,force:true});}
+  }
+});
 
 test('offline full flow: 2 Codex workpacks, checks, independent review, mocked private Draft PR and audit',async()=>{
   const f=await fixture('인물 50명 추가해줘',plan);
@@ -86,10 +149,10 @@ test('offline full flow: 2 Codex workpacks, checks, independent review, mocked p
     assert.deepEqual(events.filter(e=>e.stage==='implementation'&&e.status==='passed').map(e=>e.workpackId),['P1','P2']);
     assert.ok(events.some(e=>e.stage==='review'&&e.status==='passed'));
     assert.ok(await exists(join(f.root,'.private-task-result.json')));
-    const pub=await cmd(process.execPath,['--import',MOCK_FETCH,PUBLISH],{cwd:f.root,env:f.env});
+    const pub=await publish(f);
     assert.equal(pub.code,0,pub.out+'\n'+pub.err);
     const save=await cmd(process.execPath,['--import',MOCK_FETCH,PERSIST],{
-      cwd:f.root,env:{...f.env,PUBLISH_OUTCOME:'success'}
+      cwd:f.root,env:{...f.env,PRIVATE_GAME_WRITE_TOKEN:'FIXTURE_TOKEN',PUBLISH_OUTCOME:'success'}
     });
     assert.equal(save.code,0,save.out+'\n'+save.err);
     const calls=await readLines(f.fetchLog);
@@ -138,9 +201,9 @@ test('offline tampering: code changed after review cannot reach GitHub publisher
     // The git status path list is unchanged, but its bytes are no longer approved.
     await writeFile(join(f.root,'private-game','src','generated-one.ts'),
       'export const one = "changed AFTER review";\n');
-    const pub=await cmd(process.execPath,['--import',MOCK_FETCH,PUBLISH],{cwd:f.root,env:f.env});
+    const pub=await publish(f);
     assert.equal(pub.code,1,pub.out+'\n'+pub.err);
-    assert.match(pub.err,/PUBLISH_FAILED/);
+    assert.match(pub.err,/HANDOFF_FAILED|PUBLISH_FAILED/);
     assert.equal((await readLines(f.fetchLog)).length,0);
     assert.equal(await exists(join(f.root,'.private-task-pr.json')),false);
   }finally{await rm(f.root,{recursive:true,force:true});}

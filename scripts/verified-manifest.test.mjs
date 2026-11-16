@@ -41,6 +41,10 @@ test('rejects symlinks and oversized source payloads',async()=>{
     await writeFile(join(root,'src','target.ts'),'const hi=1;\n');
     await symlink(join(root,'src','target.ts'),join(root,'src','link.ts'));
     await assert.rejects(digestChangedFiles(root,['src/link.ts']));
+    await mkdir(join(root,'outside'),{recursive:true});
+    await writeFile(join(root,'outside','secret.ts'),'synthetic source\n');
+    await symlink(join(root,'outside'),join(root,'src','alias'));
+    await assert.rejects(digestChangedFiles(root,['src/alias/secret.ts']));
     await writeFile(join(root,'src','target.ts'),'x'.repeat(65001));
     await assert.rejects(digestChangedFiles(root,['src/target.ts']));
   }finally{await rm(root,{recursive:true,force:true});}

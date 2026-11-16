@@ -9,6 +9,12 @@ on:
       - scripts/execute-private-task.mjs
       - scripts/publish-private-task.mjs
       - scripts/persist-private-audit.mjs
+      - scripts/private-handoff*
+      - scripts/private-task-bundle*
+      - scripts/seal-private-task.mjs
+      - scripts/prepare-private-handoff.mjs
+      - scripts/publish-workflow.test.mjs
+      - .github/workflows/task-intake.yml
       - .github/workflows/ci-offline-e2e.yml
 permissions:
   contents: read
@@ -35,4 +41,4 @@ jobs:
           GEMINI_API_KEY: ""
           GOOGLE_API_KEY: ""
           CLAUDE_CODE_OAUTH_TOKEN: ""
-        run: node --test scripts/orchestrator-offline-e2e.test.mjs
+        run: node --test scripts/orchestrator-offline-e2e.test.mjs scripts/private-handoff.test.mjs scripts/private-task-bundle.test.mjs scripts/publish-workflow.test.mjs
