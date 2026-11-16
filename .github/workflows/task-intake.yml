@@ -25,9 +25,9 @@ concurrency:
   cancel-in-progress: false
 jobs:
   prepare-handoff:
-    # HARD BLOCK: execution runner can still mutate exporter/artifact output.
-    # Remove false ONLY in a reviewed change that protects the exporter, stops
-    # background writers, and verifies live isolation. Variables cannot bypass this.
+    # HARD BLOCK: containment fixtures pass, but approved subscriber runtime,
+    # provider/CI data policy, network limits and trusted validation are unfinished.
+    # Repository variables cannot bypass this; remove only after reviewed verification.
     if: >-
       false &&
       github.actor == 'skj04327' && github.event_name == 'workflow_dispatch' &&
@@ -58,7 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 55
     outputs:
-      handoff_ready: ${{ steps.seal.outcome == 'success' && steps.upload.outcome == 'success' }}
+      handoff_ready: ${{ steps.execute.outputs.handoff_ready == 'true' && steps.upload.outcome == 'success' }}
     steps:
       - name: Validate task ID
         shell: bash
@@ -94,59 +94,27 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Restore subscription auth (never log credentials)
-        shell: bash
-        env:
-          CODEX_B64: ${{ secrets.CODEX_AUTH_JSON_B64 }}
-          AGY_B64: ${{ secrets.ANTIGRAVITY_OAUTH_B64 }}
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-        run: |
-          set -euo pipefail
-          for var in CODEX_B64 AGY_B64 CLAUDE_CODE_OAUTH_TOKEN; do
-            [ -n "${!var}" ] || { echo "::error::Missing subscription secret"; exit 1; }
-          done
-          install -d -m 700 "$RUNNER_TEMP/codex-home" "$HOME/.gemini/antigravity-cli"
-          (umask 077; printf '%s' "$CODEX_B64" | base64 -d > "$RUNNER_TEMP/codex-home/auth.json")
-          (umask 077; printf '%s' "$AGY_B64" | base64 -d > "$HOME/.gemini/antigravity-cli/antigravity-oauth-token")
-      - name: Install three AI command-line tools
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -fsSL https://claude.ai/install.sh | bash >/dev/null
-          curl -fsSL https://antigravity.google/cli/install.sh | bash >/dev/null
-          npm install -g @openai/codex >/dev/null
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Plan, modify game source, test and independently review
+      - name: Run isolated worker, stop processes, then seal on trusted host
         id: execute
-        shell: bash
         env:
           TASK_ID: ${{ inputs.task_id }}
-          ORCHESTRATOR_AUDIT_DIR: ${{ runner.temp }}/private-audit
           ORCHESTRATOR_ROUTING_MODE: ${{ inputs.routing_mode }}
           ORCHESTRATOR_CONTROLLER: ${{ inputs.controller }}
-          CODEX_HOME: ${{ runner.temp }}/codex-home
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          ANTHROPIC_API_KEY: ""
-          OPENAI_API_KEY: ""
-          GEMINI_API_KEY: ""
-          GOOGLE_API_KEY: ""
-        run: node scripts/execute-private-task.mjs
-      - name: Seal captured source and metadata (never upload plaintext)
-        id: seal
-        if: always()
-        env:
-          TASK_ID: ${{ inputs.task_id }}
-          ORCHESTRATOR_AUDIT_DIR: ${{ runner.temp }}/private-audit
-          EXECUTION_OUTCOME: ${{ steps.execute.outcome == 'success' && 'success' || 'failure' }}
+          # Must be an already loaded, immutable, policy-approved runtime image.
+          # docker/worker is only the no-auth containment fixture foundation.
+          ORCHESTRATOR_WORKER_IMAGE_ID: ${{ vars.ORCHESTRATOR_WORKER_IMAGE_ID }}
           HANDOFF_PUBLIC_KEY: ${{ needs.prepare-handoff.outputs.public_key }}
-        run: node scripts/seal-private-task.mjs
+          CODEX_AUTH_JSON_B64: ${{ secrets.CODEX_AUTH_JSON_B64 }}
+          ANTIGRAVITY_OAUTH_B64: ${{ secrets.ANTIGRAVITY_OAUTH_B64 }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: node scripts/run-protected-task.mjs
       - name: Transfer ONLY encrypted handoff
         id: upload
-        if: always() && steps.seal.outcome == 'success'
+        if: always() && steps.execute.outputs.handoff_ready == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: private-handoff-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .private-handoff.enc
+          path: ${{ runner.temp }}/protected-handoff/bundle.enc
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 1
@@ -154,7 +122,7 @@ jobs:
         if: always()
         shell: bash
         run: |
-          rm -rf task-private private-game "$RUNNER_TEMP/codex-home" "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" .private-task-result.json .private-handoff.enc "$RUNNER_TEMP/private-audit"
+          rm -rf task-private private-game "$RUNNER_TEMP/protected-handoff"
   task-publish:
     needs: [prepare-handoff, task-execution]
     if: >-
@@ -183,7 +151,7 @@ jobs:
         env:
           TASK_ID: ${{ inputs.task_id }}
           EXECUTION_OUTCOME: ${{ needs.task-execution.result }}
-          ORCHESTRATOR_HANDOFF_FILE: ${{ runner.temp }}/incoming-handoff/.private-handoff.enc
+          ORCHESTRATOR_HANDOFF_FILE: ${{ runner.temp }}/incoming-handoff/bundle.enc
           PRIVATE_GAME_WRITE_TOKEN: ${{ secrets.PRIVATE_GAME_WRITE_TOKEN }}
           ORCHESTRATOR_AUDIT_DIR: ${{ runner.temp }}/private-audit
         run: node scripts/publish-private-task.mjs
