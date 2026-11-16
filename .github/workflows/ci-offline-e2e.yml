@@ -21,6 +21,8 @@ on:
       - scripts/subscription-policy*
       - scripts/check-subscription-policy.mjs
       - scripts/cli-runtime-probe*
+      - scripts/private-queue*
+      - termux/ai
       - docker/worker/**
       - .github/workflows/task-intake.yml
       - .github/workflows/ci-offline-e2e.yml

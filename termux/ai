@@ -1,32 +1,42 @@
 #!/usr/bin/env bash
 set -euo pipefail
-PUBLIC_REPO="skj04327/orchestrator-public-test"
+umask 077
 PRIVATE_REPO="skj04327/the-twilight-of-korea"
 QUEUE_BRANCH="orchestrator/task-queue"
-WORKFLOW="task-intake.yml"
 
 usage() {
   printf 'Usage: ai [--stable] [--controller claude|codex|gemini] [--reference HTTPS_URL] [--image PNG_OR_JPEG] "task" | ai status | ai logs | ai report TASK_ID\n' >&2
   exit 2
 }
 command -v gh >/dev/null || { echo "GitHub CLI (gh) is required" >&2; exit 1; }
+[ "${GITHUB_ACTIONS:-}" != "true" ] || { echo "Private intake requires a local trusted client" >&2; exit 1; }
+require_private_queue() {
+  local account private
+  account="$(gh api --hostname github.com user --jq '.login' 2>/dev/null)" || { echo "GitHub authentication unavailable" >&2; exit 1; }
+  [ "$account" = "skj04327" ] || { echo "Sign in to GitHub as skj04327 first" >&2; exit 1; }
+  private="$(gh api --hostname github.com "repos/$PRIVATE_REPO" --jq '.private' 2>/dev/null)" || { echo "Cannot verify private queue repository" >&2; exit 1; }
+  [ "$private" = "true" ] || { echo "Queue repository must be private" >&2; exit 1; }
+}
 case "${1:-}" in
   status)
-    gh run list -R "$PUBLIC_REPO" --workflow "$WORKFLOW" --limit 8
+    [ "$#" -eq 1 ] || usage
+    require_private_queue
+    printf 'Private ready requests (not execution status):\n'
+    gh api --hostname github.com "repos/$PRIVATE_REPO/contents/docs/orchestrator/requests?ref=$QUEUE_BRANCH" \
+      --jq '.[:20][] | select(.name | test("^[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9]+\\.json$")) | .name | sub("\\.json$"; "")' 2>/dev/null || { echo "Cannot read private ready queue; it may not exist yet" >&2; exit 1; }
     exit
     ;;
   report)
     [ "$#" -eq 2 ] || usage
     [[ "$2" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9]+$ ]] || { echo "Invalid task ID" >&2; exit 2; }
-    gh api "repos/$PRIVATE_REPO/contents/docs/orchestrator/reports/$2.json?ref=$QUEUE_BRANCH" --jq '.content' | base64 -d
+    require_private_queue
+    gh api --hostname github.com "repos/$PRIVATE_REPO/contents/docs/orchestrator/reports/$2.json?ref=$QUEUE_BRANCH" --jq '.content' | base64 -d
     printf '\n'
     exit
     ;;
   logs)
-    id="$(gh run list -R "$PUBLIC_REPO" --workflow "$WORKFLOW" --limit 1 --json databaseId --jq '.[0].databaseId')"
-    [ -n "$id" ] && [ "$id" != "null" ] || { echo "No workflow runs"; exit 1; }
-    gh run view "$id" -R "$PUBLIC_REPO" --log
-    exit
+    printf 'Raw task logs remain private. Use ai report TASK_ID. Local diagnostics are not yet implemented.\n' >&2
+    exit 2
     ;;
 esac
 mode="auto"
@@ -78,46 +88,59 @@ done
 task="$1"
 [ -n "${task//[[:space:]]/}" ] || usage
 [ "${#task}" -le 2500 ] || { echo "Task too long (max 2500 characters)" >&2; exit 2; }
-account="$(gh api user --jq '.login')"
-[ "$account" = "skj04327" ] || { echo "Sign in to GitHub as skj04327 first" >&2; exit 1; }
+command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 1; }
+require_private_queue
 id="$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM-$RANDOM"
-path="docs/orchestrator/tasks/$id.txt"
-content="$(printf '%s' "$task" | base64 | tr -d '\r\n')"
-gh api -X PUT "repos/$PRIVATE_REPO/contents/$path" \
-  -f message="queue: add private orchestration request $id" \
-  -f branch="$QUEUE_BRANCH" -f content="$content" --silent
-# Optional reference material stays in the PRIVATE task-queue branch.
-# Use temporary JSON request bodies rather than passing large image bytes as CLI arguments.
+work="$(mktemp -d)"
+trap 'rm -rf -- "$work"' EXIT
+printf '%s' "$task" > "$work/task.txt"
+files=("$work/task.txt")
+paths=("docs/orchestrator/tasks/$id.txt")
+kinds=(task)
 if [ -n "$reference_url" ]; then
-  tmp="$(mktemp)"
-  trap 'rm -f "${tmp:-}"' EXIT
-  {
-    printf '{"message":"refs %s","branch":"%s","content":"' "$id" "$QUEUE_BRANCH"
-    printf '{"version":1,"urls":["%s"]}' "$reference_url" | base64 | tr -d '\r\n'
-    printf '"}'
-  } > "$tmp"
-  gh api -X PUT "repos/$PRIVATE_REPO/contents/docs/orchestrator/references/$id.json" \
-    --input "$tmp" --silent
-  rm -f "$tmp"
-  trap - EXIT
+  printf '{"version":1,"urls":["%s"]}' "$reference_url" > "$work/references.json"
+  files+=("$work/references.json")
+  paths+=("docs/orchestrator/references/$id.json")
+  kinds+=(references)
 fi
 if [ -n "$image_file" ]; then
-  tmp="$(mktemp)"
-  trap 'rm -f "${tmp:-}"' EXIT
+  extension="${image_file##*.}"
+  # Capture once, with a read bound. Upload and hash precisely this snapshot.
+  head -c 700001 -- "$image_file" > "$work/image.$extension"
+  bytes="$(wc -c < "$work/image.$extension" | tr -d '[:space:]')"
+  [ "$bytes" -ge 24 ] && [ "$bytes" -le 700000 ] || { echo "Captured image size is invalid" >&2; exit 2; }
+  files+=("$work/image.$extension")
+  paths+=("docs/orchestrator/media/$id.$extension")
+  kinds+=(image)
+fi
+# A final readiness proof binds the exact uploaded bytes and preserves routing.
+{
+  printf '{"schemaVersion":1,"taskId":"%s","routing":{"mode":"%s","controller":"%s"},"inputs":[' "$id" "$mode" "$controller"
+  separator=""
+  for i in "${!files[@]}"; do
+    digest="$(sha256sum -- "${files[$i]}")"
+    digest="${digest%% *}"
+    bytes="$(wc -c < "${files[$i]}" | tr -d '[:space:]')"
+    printf '%s{"kind":"%s","path":"%s","size":%s,"sha256":"%s"}' "$separator" "${kinds[$i]}" "${paths[$i]}" "$bytes" "$digest"
+    separator=","
+  done
+  printf ']}'
+} > "$work/ready.json"
+upload_private() {
+  local path="$1" file="$2"
   {
-    printf '{"message":"image %s","branch":"%s","content":"' "$id" "$QUEUE_BRANCH"
-    base64 < "$image_file" | tr -d '\r\n'
+    printf '{"message":"queue input %s","branch":"%s","content":"' "$id" "$QUEUE_BRANCH"
+    base64 < "$file" | tr -d '\r\n'
     printf '"}'
-  } > "$tmp"
-  gh api -X PUT "repos/$PRIVATE_REPO/contents/docs/orchestrator/media/$id.${image_file##*.}" \
-    --input "$tmp" --silent
-  rm -f "$tmp"
-  trap - EXIT
-fi
-if gh workflow run "$WORKFLOW" -R "$PUBLIC_REPO" -f task_id="$id" -f routing_mode="$mode" -f controller="$controller"; then
-  printf 'Queued privately. Task ID: %s\n' "$id"
-  printf 'Status: ai status\n'
-else
-  printf 'The task was saved privately but could not dispatch Actions. Task ID: %s\n' "$id" >&2
-  exit 1
-fi
+  } > "$work/request.json"
+  if ! gh api --hostname github.com -X PUT "repos/$PRIVATE_REPO/contents/$path" --input "$work/request.json" --silent 2>"$work/gh-error"; then
+    printf 'Private queue upload failed before readiness completed. Task ID: %s\n' "$id" >&2
+    return 1
+  fi
+}
+for i in "${!files[@]}"; do upload_private "${paths[$i]}" "${files[$i]}"; done
+# Never publish readiness for a partial upload. No public Actions dispatch.
+upload_private "docs/orchestrator/requests/$id.json" "$work/ready.json"
+printf 'Queued privately. Task ID: %s\n' "$id"
+printf 'Execution: not started; no private worker is configured yet.\n'
+printf 'Status: ai status\n'
