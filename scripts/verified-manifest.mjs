@@ -21,24 +21,39 @@ export async function collectVerifiedFiles(root,paths){
      new Set(paths).size!==paths.length||
      paths.some(p=>!isSafeManifestPath(p)))
     throw Error('Unsafe PR manifest');
-  const hasher=createHash('sha256');
   const files=[];
   for(const p of [...paths].sort()){
+    // A regular leaf through a symlinked directory is not a safe file either.
+    let parent=root;
+    for(const segment of p.split('/').slice(0,-1)){
+      parent=join(parent,segment);
+      const directory=await lstat(parent);
+      if(!directory.isDirectory()||directory.isSymbolicLink())throw Error('Unsafe PR directory');
+    }
     const file=join(root,p);
     const stat=await lstat(file);
     if(!stat.isFile()||stat.isSymbolicLink()||stat.size>LIMIT)
       throw Error('Unsafe PR file type or size');
     const content=await readFile(file);
     if(content.length>LIMIT)throw Error('Unsafe PR file size');
+    files.push({path:p,content});
+  }
+  return {digest:digestFileBuffers(files),files};
+}
+export function digestFileBuffers(files){
+  if(!Array.isArray(files)||files.length<1||files.length>8||new Set(files.map(f=>f.path)).size!==files.length)
+    throw Error('Unsafe PR manifest');
+  const hasher=createHash('sha256');
+  for(const {path:p,content} of [...files].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0)){
+    if(!isSafeManifestPath(p)||!Buffer.isBuffer(content)||content.length>LIMIT)throw Error('Unsafe PR buffer');
     hasher.update(p,'utf8');
     hasher.update('\0');
     hasher.update(String(content.length),'utf8');
     hasher.update('\0');
     hasher.update(content);
     hasher.update('\0');
-    files.push({path:p,content});
   }
-  return {digest:hasher.digest('hex'),files};
+  return hasher.digest('hex');
 }
 export async function digestChangedFiles(root,paths){
   return (await collectVerifiedFiles(root,paths)).digest;

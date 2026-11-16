@@ -214,7 +214,8 @@ try{
   if((await fingerprint(paths))!==beforeReview)throw Error('Reviewer modified source after validation');
   safeLog(route.reviewer+' independent review PASSED');
   const verifiedContentSha256=await fingerprint(paths);
-  await writeFile(join(process.cwd(),'.private-task-result.json'),JSON.stringify({id,paths,verifiedContentSha256,route:createRouteMetadata(route)}),{mode:0o600});
+  const baseSha=(await run('git',['rev-parse','HEAD'])).trim();
+  await writeFile(join(process.cwd(),'.private-task-result.json'),JSON.stringify({id,baseSha,paths,verifiedContentSha256,route:createRouteMetadata(route)}),{mode:0o600});
   safeLog('Validated private change ready for PR publishing');
   finalStatus='passed';
 }catch(e){

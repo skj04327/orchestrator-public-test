@@ -24,10 +24,41 @@ concurrency:
   group: termux-task-intake
   cancel-in-progress: false
 jobs:
+  prepare-handoff:
+    # HARD BLOCK: execution runner can still mutate exporter/artifact output.
+    # Remove false ONLY in a reviewed change that protects the exporter, stops
+    # background writers, and verifies live isolation. Variables cannot bypass this.
+    if: >-
+      false &&
+      github.actor == 'skj04327' && github.event_name == 'workflow_dispatch' &&
+      vars.ORCHESTRATOR_LIVE_POLICY_CONFIRMED == 'true' &&
+      vars.ORCHESTRATOR_FREE_STORAGE_CONFIRMED == 'true' &&
+      inputs.task_id != '20261115T121256Z-10360-7098'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      public_key: ${{ steps.key.outputs.public_key }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Derive run-specific recipient public key (no private source)
+        id: key
+        env:
+          TASK_ID: ${{ inputs.task_id }}
+          PRIVATE_GAME_WRITE_TOKEN: ${{ secrets.PRIVATE_GAME_WRITE_TOKEN }}
+        run: node scripts/prepare-private-handoff.mjs
   task-execution:
+    needs: prepare-handoff
     if: github.actor == 'skj04327' && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 55
+    outputs:
+      handoff_ready: ${{ steps.seal.outcome == 'success' && steps.upload.outcome == 'success' }}
     steps:
       - name: Validate task ID
         shell: bash
@@ -40,6 +71,7 @@ jobs:
       - name: Checkout public orchestrator
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Checkout private task queue
         uses: actions/checkout@v4
@@ -85,6 +117,7 @@ jobs:
           npm install -g @openai/codex >/dev/null
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Plan, modify game source, test and independently review
+        id: execute
         shell: bash
         env:
           TASK_ID: ${{ inputs.task_id }}
@@ -98,24 +131,70 @@ jobs:
           GEMINI_API_KEY: ""
           GOOGLE_API_KEY: ""
         run: node scripts/execute-private-task.mjs
-      - name: Publish private Draft PR only after successful checks
-        id: publish
-        shell: bash
+      - name: Seal captured source and metadata (never upload plaintext)
+        id: seal
+        if: always()
         env:
           TASK_ID: ${{ inputs.task_id }}
-          PRIVATE_GAME_WRITE_TOKEN: ${{ secrets.PRIVATE_GAME_WRITE_TOKEN }}
-        run: node scripts/publish-private-task.mjs
-      - name: Save execution metadata to private queue (also on failure)
+          ORCHESTRATOR_AUDIT_DIR: ${{ runner.temp }}/private-audit
+          EXECUTION_OUTCOME: ${{ steps.execute.outcome == 'success' && 'success' || 'failure' }}
+          HANDOFF_PUBLIC_KEY: ${{ needs.prepare-handoff.outputs.public_key }}
+        run: node scripts/seal-private-task.mjs
+      - name: Transfer ONLY encrypted handoff
+        id: upload
+        if: always() && steps.seal.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: private-handoff-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .private-handoff.enc
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+      - name: Remove private checkouts and auth
         if: always()
         shell: bash
+        run: |
+          rm -rf task-private private-game "$RUNNER_TEMP/codex-home" "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" .private-task-result.json .private-handoff.enc "$RUNNER_TEMP/private-audit"
+  task-publish:
+    needs: [prepare-handoff, task-execution]
+    if: >-
+      always() && needs.prepare-handoff.result == 'success' &&
+      needs.task-execution.outputs.handoff_ready == 'true' &&
+      needs.task-execution.result != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Fresh trusted publisher checkout (no game checkout)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Download this run's ciphertext only
+        uses: actions/download-artifact@v4
+        with:
+          name: private-handoff-${{ github.run_id }}-${{ github.run_attempt }}
+          # Untrusted artifact entries must never share the trusted script directory.
+          path: ${{ runner.temp }}/incoming-handoff
+      - name: Decrypt, recheck and publish private Draft PR
+        id: publish
+        env:
+          TASK_ID: ${{ inputs.task_id }}
+          EXECUTION_OUTCOME: ${{ needs.task-execution.result }}
+          ORCHESTRATOR_HANDOFF_FILE: ${{ runner.temp }}/incoming-handoff/.private-handoff.enc
+          PRIVATE_GAME_WRITE_TOKEN: ${{ secrets.PRIVATE_GAME_WRITE_TOKEN }}
+          ORCHESTRATOR_AUDIT_DIR: ${{ runner.temp }}/private-audit
+        run: node scripts/publish-private-task.mjs
+      - name: Save normalized metadata to private queue (also on failure)
+        if: always()
         env:
           TASK_ID: ${{ inputs.task_id }}
           PRIVATE_GAME_WRITE_TOKEN: ${{ secrets.PRIVATE_GAME_WRITE_TOKEN }}
           ORCHESTRATOR_AUDIT_DIR: ${{ runner.temp }}/private-audit
           PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
         run: node scripts/persist-private-audit.mjs
-      - name: Remove private checkouts and auth
+      - name: Delete decrypted metadata and ciphertext
         if: always()
-        shell: bash
-        run: |
-          rm -rf task-private private-game "$RUNNER_TEMP/codex-home" "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" .private-task-result.json .private-task-pr.json "$RUNNER_TEMP/private-audit"
+        run: rm -rf .private-task-pr.json "${{ runner.temp }}/incoming-handoff" "${{ runner.temp }}/private-audit"

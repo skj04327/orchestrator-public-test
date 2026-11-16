@@ -33,6 +33,10 @@ if(name==='codex'){
   const file=pack==='P2'?'generated-two.ts':'generated-one.ts';
   mkdirSync(join(dir,'src'),{recursive:true});
   writeFileSync(join(dir,'src',file),'export const '+(pack==='P2'?'two':'one')+' = true;\n');
+  if(process.env.MOCK_ADD_TEST==='1'){
+    mkdirSync(join(dir,'tests'),{recursive:true});
+    writeFileSync(join(dir,'tests','generated.test.ts'),'// synthetic NEW test fixture\n');
+  }
   process.exit(0);
 }
 process.exit(99);

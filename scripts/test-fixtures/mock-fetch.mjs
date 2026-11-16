@@ -16,7 +16,10 @@ globalThis.fetch=async(input,options={})=>{
   appendFileSync(process.env.MOCK_FETCH_LOG,JSON.stringify(row)+'\n');
   if(method==='GET'&&url.pathname.endsWith('/git/ref/heads/main'))
     return json({object:{sha:process.env.MOCK_GIT_HEAD}});
-  if(method==='GET'&&url.pathname.includes('/contents/'))return json({message:'Not Found'},404);
+  if(method==='GET'&&url.pathname.includes('/contents/')){
+    if(process.env.MOCK_EXISTING_TEST==='1'&&url.pathname.includes('/tests/'))return json({sha:'existing-test'});
+    return json({message:'Not Found'},404);
+  }
   if(method==='POST'&&url.pathname.endsWith('/git/refs'))return json({ref:body.ref},201);
   if(method==='PUT'&&url.pathname.includes('/contents/'))return json({content:{sha:'fixture-only'}},201);
   if(method==='POST'&&url.pathname.endsWith('/pulls'))
