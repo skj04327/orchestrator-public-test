@@ -9,6 +9,7 @@ import {runIsolatedCheck,captureCheckConfiguration} from './isolated-check.mjs';
 import {getPinnedBaselineProof,validatePinnedBaselineProof,collectPrivateBaseline} from './pinned-private-baseline.mjs';
 import {ghBaselineGet} from './pinned-baseline-cli.mjs';
 import {validateBundle} from './private-task-bundle.mjs';
+import {materializeDiskBaseline} from './disk-baseline.mjs';
 const hash=b=>createHash('sha256').update(b).digest('hex');
 const exact=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join(',')===[...keys].sort().join(',');
 const digest=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
@@ -98,4 +99,16 @@ export async function runPinnedIndependentChecks({id,stateRoot,privateKey,imageI
   const collected=await collectPrivateBaseline({get,expectedBaseSha:bundle.baseSha,signal,timeoutMs:snapshotTimeoutMs});
   if(collected.phase!=='captured')return {taskId:id,phase:collected.phase,fileCount:collected.fileCount,totalBytes:collected.totalBytes,publishAuthorized:false};
   return runLocalIndependentChecks({id,stateRoot,privateKey,...config,signal,baseline:collected.baseline});
+}
+export async function runDiskIndependentChecks({id,stateRoot,privateKey,diskSnapshot,imageId,timeoutMs,outputLimit,signal}){
+  if(process.env.GITHUB_ACTIONS==='true'||signal?.aborted)throw Error('Local host required');
+  const config=captureCheckConfiguration({imageId,timeoutMs,outputLimit}),state=await readLocalJob({id,stateRoot});
+  if(state.phase!=='awaiting-independent-validation')throw Error('Local result unavailable');
+  const encrypted=await readPrivateStateFile(join(stateRoot,id,'result.enc'),MAX_HANDOFF_BYTES);
+  if(hash(encrypted)!==state.artifactSha256)throw Error('Local artifact changed');
+  const bundle=validateBundle(open(encrypted,privateKey,state.context),state.context);
+  if(!bundle.result||diskSnapshot?.baseSha!==bundle.baseSha)throw Error('Wrong disk baseline');
+  const ready=await materializeDiskBaseline(diskSnapshot,{signal});
+  if(ready.phase!=='materialized')return {taskId:id,...ready,publishAuthorized:false};
+  return runLocalIndependentChecks({id,stateRoot,privateKey,...config,signal,baseline:ready.baseline});
 }

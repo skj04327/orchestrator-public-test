@@ -17,8 +17,8 @@ export async function gitBaselineFixture(baseline,{executablePaths=[]}={}){
     for(const f of baseline.files){await mkdir(dirname(join(root,f.path)),{recursive:true});await writeFile(join(root,f.path),Buffer.from(f.content,'base64'));if(executablePaths.includes(f.path))await chmod(join(root,f.path),0o755);}
     await git(['add','--all']);await git(['commit','--quiet','-m','Synthetic baseline']);
     const baseSha=await git(['rev-parse','HEAD']),treeSha=await git(['rev-parse','HEAD^{tree}']);
-    const listed=await git(['ls-tree','-r','-t','-l',treeSha]);
-    const entries=listed.split('\n').filter(Boolean).map(line=>{
+    const listed=await git(['ls-tree','-r','-t','-l','-z',treeSha]);
+    const entries=listed.split('\0').filter(Boolean).map(line=>{
       const [meta,path]=line.split('\t'),[mode,type,sha,size]=meta.trim().split(/\s+/);
       return {path,mode,type,sha,...(type==='blob'?{size:Number(size)}:{})};
     });
