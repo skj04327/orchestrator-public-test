@@ -37,7 +37,7 @@ test('abort during final real filesystem integrity read cannot commit a passed r
     // Fault simulator replaces only the external daemon; filesystem integrity reads stay real.
     await writeFile(binary,`#!/usr/bin/env node
 import {writeFileSync} from 'node:fs';if(process.argv[2]==='inspect'){
-writeFileSync(${JSON.stringify(marker)},'done');console.log(JSON.stringify({Running:false,Paused:false,Restarting:false,ExitCode:0}));}`);
+writeFileSync(${JSON.stringify(marker)},'done');console.log(JSON.stringify({Status:'exited',Running:false,Paused:false,Restarting:false,OOMKilled:false,Dead:false,Pid:0,Error:'',StartedAt:'2026-11-18T00:00:00.123Z',FinishedAt:'2026-11-18T00:00:01.123Z',ExitCode:0}));}`);
     await chmod(binary,0o755);process.env.PATH=root+':'+oldPath;
     const abort=new AbortController(),artifact=join(f.stateRoot,f.id,'result.enc');
     fs.promises.open=async(...args)=>{
@@ -71,6 +71,9 @@ test('interrupted independent claim is never retried and incomplete or unclaimed
       const bad=structuredClone(report);Object.assign(bad.checks[3],patch);
       await writeFile(join(dir,'independent-report.json'),JSON.stringify(bad));await assert.rejects(readIndependentCheckStatus(f));
     }
+    const oom=structuredClone(report);oom.phase='needs-recovery';oom.failureKind='resource_limit';oom.checks[3].failureKind='resource_limit';oom.checks[3].exitCode=137;
+    await writeFile(join(dir,'independent-report.json'),JSON.stringify(oom));
+    const observed=await readIndependentCheckStatus(f);assert.equal(observed.phase,'needs-recovery');assert.equal(observed.failureKind,'resource_limit');assert.equal(observed.publishAuthorized,false);
     await writeFile(join(dir,'independent-report.json'),'null');await assert.rejects(readIndependentCheckStatus(f));
     await writeFile(join(dir,'independent-report.json'),'{',{mode:0o600});await assert.rejects(readIndependentCheckStatus(f));
     await rm(join(dir,'independent-claim.json'));await writeFile(join(dir,'independent-report.json'),'{}');await assert.rejects(readIndependentCheckStatus(f));

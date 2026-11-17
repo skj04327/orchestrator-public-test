@@ -1,6 +1,6 @@
 // Independent host observations; no game-authored status or audit file is accepted.
 import {randomUUID} from 'node:crypto';
-import {docker,failure} from './docker-command.mjs';
+import {docker,failure,parseExitedDockerState} from './docker-command.mjs';
 import {makeTarFile} from './container-tar.mjs';
 import {parseCheckPayload} from './independent-check-input.mjs';
 const stages={typecheck:['run','typecheck'],'unit-test':['test','--','--reporter=dot'],build:['run','build']};
@@ -60,10 +60,10 @@ export async function runIsolatedCheck({imageId,payload,variant,stage,timeoutMs=
     let startFailure=null;
     try{await request(['start','--attach',name],{timeout:timeoutMs,limit:outputLimit});}
     catch(error){if(error.failureKind!=='docker_error')throw error;startFailure=error;}
-    const state=JSON.parse((await request(['inspect','--format','{{json .State}}',name])).toString());
-    if(state.Running||state.Paused||state.Restarting||!Number.isInteger(state.ExitCode))throw failure('invalid_state');
+    const state=parseExitedDockerState(JSON.parse((await request(['inspect','--format','{{json .State}}',name])).toString()));
     exitCode=state.ExitCode;
-    if(exitCode!==0)failureKind='check_failed';
+    if(state.OOMKilled)failureKind='resource_limit';
+    else if(exitCode!==0)failureKind='check_failed';
     else if(startFailure)throw startFailure;
     else status='passed';
   }catch(error){failureKind=error.failureKind||'invalid_output';}
