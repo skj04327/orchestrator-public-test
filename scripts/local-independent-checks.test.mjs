@@ -61,6 +61,17 @@ test('interrupted independent claim is never retried and incomplete or unclaimed
     const dir=join(f.stateRoot,f.id);await writeFile(join(dir,'independent-claim.json'),JSON.stringify(claim),{mode:0o600});
     assert.equal((await readIndependentCheckStatus(f)).phase,'running-or-needs-recovery');
     await assert.rejects(runLocalIndependentChecks({...f,privateKey:key.privateKey,baseline:p.baseline,imageId}),e=>e.code==='EEXIST');
+    const checks=['baseline:typecheck','baseline:unit-test','baseline:build','candidate:typecheck','candidate:unit-test','candidate:build']
+      .map(key=>{const [variant,stage]=key.split(':');return {variant,stage,status:'passed',failureKind:null,exitCode:0,removed:true,durationMs:1};});
+    checks[3]={...checks[3],status:'failed',failureKind:'check_failed',exitCode:1};
+    const report={...claim,phase:'checks-failed',checks,baselineBinding:'caller-supplied',review:'not-run',publishAuthorized:false,failureKind:null};
+    await writeFile(join(dir,'independent-report.json'),JSON.stringify(report),{mode:0o600});
+    assert.equal((await readIndependentCheckStatus(f)).phase,'checks-failed');
+    for(const patch of [{exitCode:0},{failureKind:'timeout',exitCode:null}]){
+      const bad=structuredClone(report);Object.assign(bad.checks[3],patch);
+      await writeFile(join(dir,'independent-report.json'),JSON.stringify(bad));await assert.rejects(readIndependentCheckStatus(f));
+    }
+    await writeFile(join(dir,'independent-report.json'),'null');await assert.rejects(readIndependentCheckStatus(f));
     await writeFile(join(dir,'independent-report.json'),'{',{mode:0o600});await assert.rejects(readIndependentCheckStatus(f));
     await rm(join(dir,'independent-claim.json'));await writeFile(join(dir,'independent-report.json'),'{}');await assert.rejects(readIndependentCheckStatus(f));
   }finally{await rm(root,{recursive:true,force:true});}

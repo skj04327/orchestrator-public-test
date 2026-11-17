@@ -9,7 +9,8 @@ import {promisify} from 'node:util';
 import {makeLocalReceipt} from './test-fixtures/local-receipt.mjs';
 import {independentProject} from './test-fixtures/independent-project.mjs';
 import {prepareLocalJob,runPreparedLocalJob,readLocalJob} from './local-jobs.mjs';
-import {runLocalIndependentChecks,readIndependentCheckStatus} from './local-independent-checks.mjs';
+import {runLocalIndependentChecks,readIndependentCheckStatus,runPinnedIndependentChecks} from './local-independent-checks.mjs';
+import {gitBaselineFixture} from './test-fixtures/git-baseline.mjs';
 import {runIsolatedCheck} from './isolated-check.mjs';
 import {captureCheckSnapshot} from './independent-check-input.mjs';
 import {recipientKey,seal} from './private-handoff.mjs';
@@ -18,8 +19,10 @@ if(!/^sha256:[a-f0-9]{64}$/.test(imageId||''))throw Error('Actual Docker image I
 async function fixture(options){
   const root=await mkdtemp(join(tmpdir(),'independent-real-')),f=await makeLocalReceipt(root),job=await prepareLocalJob(f);
   const project=independentProject(job.context,options),key=recipientKey('SYNTHETIC_PRIVATE_LOCAL_KEY',job.context);
+  const source=options?.pinned?await gitBaselineFixture(project.baseline):null;
+  if(source){project.baseline.baseSha=source.baseSha;project.bundle.baseSha=source.baseSha;project.bundle.result.baseSha=source.baseSha;}
   await runPreparedLocalJob({...f,publicKey:key.publicKey,worker:async()=>({removed:true,executionOutcome:'success',encrypted:seal(project.bundle,key.publicKey,job.context)})});
-  return {...f,root,context:job.context,project,privateKey:key.privateKey};
+  return {...f,root,context:job.context,project,privateKey:key.privateKey,source};
 }
 async function noResources(){
   const exec=promisify(execFile);
@@ -50,6 +53,21 @@ test('six actual checks use fresh source, no credentials and no mutable cross-st
     await writeFile(path,JSON.stringify({...report,publishAuthorized:true}));await assert.rejects(readIndependentCheckStatus(f));
   }finally{if(f)await rm(f.root,{recursive:true,force:true});delete process.env.PRIVATE_GAME_WRITE_TOKEN;delete process.env.LOCAL_DECRYPTION_KEY;
     if(actions===undefined)delete process.env.GITHUB_ACTIONS;else process.env.GITHUB_ACTIONS=actions;}
+});
+test('pinned GitHub protocol snapshot reaches six real Docker checks with bound provenance and no publish permission',async()=>{
+  const actions=process.env.GITHUB_ACTIONS;delete process.env.GITHUB_ACTIONS;
+  let f;
+  try{
+    f=await fixture({pinned:true});
+    const report=await runPinnedIndependentChecks({...f,get:f.source.get,imageId,timeoutMs:30000});
+    assert.equal(report.phase,'checks-passed-awaiting-review');assert.equal(report.baselineBinding,'github-main-pinned');
+    assert.equal(report.baselineProvenance.baseSha,f.source.baseSha);assert.equal(report.baselineProvenance.treeSha,f.source.treeSha);
+    assert.equal(report.baselineProvenance.baselineContentSha256,report.baselineContentSha256);
+    assert.equal(report.publishAuthorized,false);assert.equal(report.checks.length,6);await noResources();
+    const path=join(f.stateRoot,f.id,'independent-report.json');
+    await writeFile(path,JSON.stringify({...report,baselineProvenance:{...report.baselineProvenance,treeSha:'a'.repeat(40)}}));
+    await assert.rejects(readIndependentCheckStatus(f));
+  }finally{if(f)await rm(f.root,{recursive:true,force:true});if(actions===undefined)delete process.env.GITHUB_ACTIONS;else process.env.GITHUB_ACTIONS=actions;}
 });
 test('forged passed audit cannot hide candidate unit failure or excuse an already failing baseline',async()=>{
   const actions=process.env.GITHUB_ACTIONS;delete process.env.GITHUB_ACTIONS;
