@@ -3,8 +3,20 @@ import assert from 'node:assert/strict';
 import {mkdtemp,readFile,rm,readdir,lstat,symlink,mkdir,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {createReadyManifest,validateReadyManifest,receivePrivateTask,readLocalReceipt} from './private-queue.mjs';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import {createReadyManifest,validateReadyManifest,receivePrivateTask,readLocalReceipt,captureReceivedTask} from './private-queue.mjs';
 const ID='20261116T120000Z-123-456',SHA='e'.repeat(40);
+test('private state reads refuse FIFO substitution without waiting for a writer',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'private-state-')),exec=promisify(execFile);
+  try{
+    const fifo=join(root,'state.json');await exec('mkfifo',['-m','600',fifo]);
+    const source=`import {readPrivateStateFile} from ${JSON.stringify(new URL('./private-queue.mjs',import.meta.url).href)};
+      try{await readPrivateStateFile(process.argv[1],4096);process.exitCode=3;}catch{console.log('REFUSED');}`;
+    const result=await exec(process.execPath,['--input-type=module','--eval',source,fifo],{timeout:2000});
+    assert.equal(result.stdout.trim(),'REFUSED');
+  }finally{await rm(root,{recursive:true,force:true});}
+});
 function fixture(){
   const inputs=[{kind:'task',path:'docs/orchestrator/tasks/'+ID+'.txt',content:Buffer.from('SYNTHETIC_PRIVATE_TASK')},
     {kind:'references',path:'docs/orchestrator/references/'+ID+'.json',content:Buffer.from(JSON.stringify({version:1,urls:['https://en.wikipedia.org/wiki/Goryeo']}))}];
@@ -66,6 +78,16 @@ test('a nonsticky writable ancestor cannot redirect private receipt writes',asyn
     const insecure=join(root,'insecure');await mkdir(insecure,{mode:0o777});
     const {chmod}=await import('node:fs/promises');await chmod(insecure,0o777);
     await assert.rejects(receivePrivateTask({id:ID,root:join(insecure,'state'),get:f.get}));
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+test('job capture rechecks received bytes and never trusts receipt status alone',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'private-receipt-')),f=fixture();
+  try{
+    const receipt=await receivePrivateTask({id:ID,root,get:f.get});
+    const packet=await captureReceivedTask({id:ID,root});
+    assert.equal(packet.inputs[0].content.toString(),'SYNTHETIC_PRIVATE_TASK');
+    await writeFile(join(root,receipt.bundleDirectory,'task-private',f.inputs[0].path),'CHANGED_AFTER_RECEIPT');
+    await assert.rejects(captureReceivedTask({id:ID,root}));
   }finally{await rm(root,{recursive:true,force:true});}
 });
 test('public repository, tampered bytes or incomplete inputs produce no receipt',async()=>{

@@ -36,3 +36,15 @@ test('transport is bounded and requires exact validated run context and secret',
   assert.throws(()=>handoffContext({...context,repository:'other/repo'}));
   assert.throws(()=>handoffContext({...context,extra:'untrusted'}));
 });
+test('local v2 context binds receipt/queue/run without forged GitHub variables or v1 replay',()=>{
+  const local={kind:'local',schemaVersion:2,taskId:context.taskId,
+    runId:'12345678-1234-4234-8234-123456789abc',queueCommitSha:'b'.repeat(40),receiptSha256:'c'.repeat(64)};
+  const recipient=recipientKey('local-test-secret',local),bytes=seal({ok:true},recipient.publicKey,local);
+  assert.deepEqual(open(bytes,recipient.privateKey,local),{ok:true});
+  for(const patch of [{queueCommitSha:'d'.repeat(40)},{receiptSha256:'d'.repeat(64)},
+    {runId:'12345678-1234-4234-8234-123456789abd'}])
+    assert.throws(()=>open(bytes,recipient.privateKey,{...local,...patch}));
+  assert.throws(()=>open(bytes,recipient.privateKey,context));
+  for(const patch of [{repository:context.repository},{runId:'42'},{schemaVersion:1},{kind:'github'}])
+    assert.throws(()=>handoffContext({...local,...patch}));
+});
