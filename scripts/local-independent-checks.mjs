@@ -13,7 +13,7 @@ import {materializeDiskBaseline} from './disk-baseline.mjs';
 const hash=b=>createHash('sha256').update(b).digest('hex');
 const exact=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join(',')===[...keys].sort().join(',');
 const digest=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
-const kinds=['check_failed','docker_error','timeout','output_limit','cancelled','invalid_output','invalid_state','cleanup_failed','operation_failed'];
+const kinds=['resource_limit','check_failed','docker_error','timeout','output_limit','cancelled','invalid_output','invalid_state','cleanup_failed','operation_failed'];
 const order=['baseline:typecheck','baseline:unit-test','baseline:build','candidate:typecheck','candidate:unit-test','candidate:build'];
 const claimKeys=['schemaVersion','context','artifactSha256','baseSha','baselineContentSha256','candidateContentSha256','imageId'];
 const fields=c=>Object.hasOwn(c,'baselineProvenance')?[...claimKeys,'baselineProvenance']:claimKeys;

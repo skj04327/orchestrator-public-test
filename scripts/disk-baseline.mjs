@@ -3,6 +3,7 @@ import {mkdir,mkdtemp,open,rm,link,statfs} from 'node:fs/promises';
 import {constants} from 'node:fs';
 import {join,basename} from 'node:path';
 import {createHash} from 'node:crypto';
+import {makeTarHeader} from './container-tar.mjs';
 import {ensurePrivateStateRoot,writePrivateStateFile} from './private-queue.mjs';
 import {readMainInventory,readPrivateMainHead,checkTree,BASELINE_REPOSITORY,fail} from './main-inventory.mjs';
 import {privateReadSession} from './private-read-session.mjs';
@@ -127,4 +128,38 @@ export async function materializeDiskBaseline(snapshot,{signal}={}){
     treeSha:index.treeSha,baselineContentSha256:baselineContentDigest(baseline.files),fileCount:index.fileCount,totalBytes:index.totalBytes,observedAt:index.observedAt});
   for(const f of baseline.files)Object.freeze(f);Object.freeze(baseline.files);Object.freeze(baseline);materialized.set(baseline,proof);
   return {phase:'materialized',baseline,publishAuthorized:false};
+}
+
+// Trusted host transfer only; data-only handles can never expose an execution stream.
+export function createDiskBaselineArchive(snapshot,{signal}={}){
+  const state=handles.get(snapshot);
+  if(process.env.GITHUB_ACTIONS==='true'||!state||state.index.purpose!=='checks')throw fail('disk_execution_denied');
+  const {root,index}=state;let used=false;
+  const check=()=>{if(signal?.aborted)throw fail('cancelled');};check();
+  const manifest=Buffer.from(JSON.stringify({schemaVersion:1,files:index.files,totalBytes:index.totalBytes})+'\n');
+  if(manifest.length>MAX_INDEX)throw fail('index_capacity');
+  async function* generate(){
+    check();yield makeTarHeader('manifest.json',manifest.length);
+    for(let at=0;at<manifest.length;at+=65536){check();yield manifest.subarray(at,at+65536);}
+    yield Buffer.alloc((512-manifest.length%512)%512);
+    const blobs=await ensurePrivateStateRoot(join(root,index.bundleDirectory,'blobs')),seen=new Set();
+    for(const e of index.files){
+      check();if(seen.has(e.sha))continue;seen.add(e.sha);
+      const file=await open(join(blobs,e.sha),constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+      try{
+        const s=await file.stat();
+        if(!s.isFile()||s.uid!==process.getuid()||(s.mode&0o077)||s.nlink!==1||s.size!==e.size)throw fail('unsafe_cache_blob');
+        const h1=createHash('sha1').update('blob '+e.size+'\0'),h256=createHash('sha256');let n=0;
+        yield makeTarHeader(e.sha,e.size);
+        while(true){check();const bytes=Buffer.alloc(65536),{bytesRead}=await file.read(bytes,0,bytes.length,n);if(!bytesRead)break;
+          n+=bytesRead;if(n>e.size)throw fail('blob_integrity');const part=bytes.subarray(0,bytesRead);h1.update(part);h256.update(part);yield part;}
+        check();if(n!==e.size||h1.digest('hex')!==e.sha||h256.digest('hex')!==e.sha256)throw fail('blob_integrity');
+        yield Buffer.alloc((512-e.size%512)%512);
+      }finally{await file.close();}
+    }
+    check();yield Buffer.alloc(1024);
+  }
+  const inputStream=Object.freeze({[Symbol.asyncIterator](){if(used)throw fail('archive_already_consumed');used=true;return generate();}});
+  return Object.freeze({inputStream,provenance:Object.freeze({baselineBinding:'github-main-pinned',baseSha:index.baseSha,treeSha:index.treeSha,
+    manifestSha256:index.manifestSha256,fileCount:index.fileCount,totalBytes:index.totalBytes,observedAt:index.observedAt,publishAuthorized:false})});
 }

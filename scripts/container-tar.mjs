@@ -17,12 +17,16 @@ export function readDockerFile(bytes,name,limit){
   if(size>limit||end+1024>bytes.length||bytes.subarray(end).some(b=>b!==0))throw Error('Unsafe Docker file size or extra entry');
   return Buffer.from(bytes.subarray(block,block+size));
 }
-export function makeTarFile(name,content){
-  if(!/^[a-zA-Z0-9_.-]{1,90}$/.test(name)||!Buffer.isBuffer(content))throw Error('Unsafe input file');
+export function makeTarHeader(name,size){
+  if(!/^[a-zA-Z0-9_.-]{1,90}$/.test(name)||!Number.isSafeInteger(size)||size<0||size>0o77777777777)throw Error('Unsafe input file');
   const h=Buffer.alloc(block);
   h.write(name);h.write('0000444\0',100);h.write('0000000\0',108);h.write('0000000\0',116);
-  h.write(content.length.toString(8).padStart(11,'0')+'\0',124);h.write('00000000000\0',136);
+  h.write(size.toString(8).padStart(11,'0')+'\0',124);h.write('00000000000\0',136);
   h.fill(32,148,156);h.write('0',156);h.write('ustar\0',257);h.write('00',263);
   const checksum=h.reduce((s,b)=>s+b,0);h.write(checksum.toString(8).padStart(6,'0')+'\0 ',148);
-  return Buffer.concat([h,content,Buffer.alloc((block-content.length%block)%block+1024)]);
+  return h;
+}
+export function makeTarFile(name,content){
+  if(!Buffer.isBuffer(content))throw Error('Unsafe input file');
+  return Buffer.concat([makeTarHeader(name,content.length),content,Buffer.alloc((block-content.length%block)%block+1024)]);
 }

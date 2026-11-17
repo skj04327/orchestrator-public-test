@@ -16,7 +16,7 @@ appendFileSync(${JSON.stringify(log)},JSON.stringify(a)+'\\n');
 const mode=${JSON.stringify(mode)};
 if(mode==='create-fails'&&a[0]==='create')process.exit(1);
 if(mode==='cleanup-fails'&&a[0]==='volume'&&a[1]==='rm')process.exit(1);
-if(a[0]==='inspect')console.log(JSON.stringify({Running:false,Paused:false,Restarting:false,ExitCode:mode==='check-fails'?1:0}));
+if(a[0]==='inspect')console.log(JSON.stringify({Status:'exited',Running:false,Paused:false,Restarting:false,OOMKilled:false,Dead:false,Pid:0,Error:'',StartedAt:'2026-11-18T00:00:00.123Z',FinishedAt:'2026-11-18T00:00:01.123Z',ExitCode:mode==='check-fails'?1:0}));
 `;
       await writeFile(join(root,'docker'),shim);await chmod(join(root,'docker'),0o755);process.env.PATH=root+':'+originalPath;
       const operation=()=>runIsolatedCheck({imageId:'sha256:'+'a'.repeat(64),payload,variant:'candidate',stage:'build'});
