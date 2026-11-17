@@ -28,6 +28,8 @@ on:
       - scripts/local-independent-checks*
       - scripts/isolated-check*
       - scripts/docker-command.mjs
+      - scripts/pinned-private-baseline*
+      - scripts/pinned-baseline-cli*
       - termux/ai
       - docker/worker/**
       - .github/workflows/task-intake.yml

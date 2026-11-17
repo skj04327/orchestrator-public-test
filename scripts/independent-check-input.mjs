@@ -5,13 +5,15 @@ import {validateBundle} from './private-task-bundle.mjs';
 import {digestFileBuffers,isSafeManifestPath} from './verified-manifest.mjs';
 const exact=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join(',')===[...keys].sort().join(',');
 export const MAX_CHECK_PAYLOAD=46000000;
+export function isSafeBaselinePath(path){
+  return typeof path==='string'&&path.length<=240&&/^[a-zA-Z0-9_.@/-]+$/.test(path)&&path.split('/').length<=32&&
+    !path.split('/').some(p=>!p||p==='.'||p==='..'||/^(?:\.git|node_modules|\.env.*|\.npmrc|\.codex|\.claude|\.gemini|\.aws|\.ssh|\.config|\.docker|\.azure|\.kube|\.gnupg|\.npm|\.cache|\.local)$/.test(p));
+}
 function files(value,candidate=false){
   if(!Array.isArray(value)||!value.length||value.length>(candidate?8:10000))throw Error('Invalid check files');
   const paths=new Set();let total=0;
   const captured=value.map(f=>{
-    if(!exact(f,['path','content'])||typeof f.path!=='string'||f.path.length>240||
-      !/^[a-zA-Z0-9_.@/-]+$/.test(f.path)||f.path.split('/').length>32||
-      f.path.split('/').some(p=>!p||p==='.'||p==='..'||/^(?:\.git|node_modules|\.env.*|\.npmrc|\.codex|\.claude|\.gemini|\.aws|\.ssh|\.config|\.docker|\.azure|\.kube|\.gnupg|\.npm|\.cache|\.local)$/.test(p))||
+    if(!exact(f,['path','content'])||!isSafeBaselinePath(f.path)||
       (candidate&&!isSafeManifestPath(f.path))||paths.has(f.path)||typeof f.content!=='string'||
       f.content.length>Math.ceil((candidate?65000:1048576)/3)*4)throw Error('Unsafe check file');
     const content=Buffer.from(f.content,'base64');total+=content.length;
@@ -50,6 +52,7 @@ function digest(files){
   for(const f of files){const b=Buffer.from(f.content,'base64');h.update(f.path+'\0'+b.length+'\0');h.update(b);h.update('\0');}
   return h.digest('hex');
 }
+export function baselineContentDigest(value){return digest(files(value));}
 export function captureCheckSnapshot({context,bundle,baseline}){
   if(context?.kind!=='local')throw Error('Local check context required');handoffContext(context);
   const verified=validateBundle(bundle,context);
