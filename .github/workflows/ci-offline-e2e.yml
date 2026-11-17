@@ -30,6 +30,11 @@ on:
       - scripts/docker-command.mjs
       - scripts/pinned-private-baseline*
       - scripts/pinned-baseline-cli*
+      - scripts/disk-baseline*
+      - scripts/gh-blob-stream*
+      - scripts/main-inventory.mjs
+      - scripts/private-read-session.mjs
+      - scripts/gh-private-environment.mjs
       - termux/ai
       - docker/worker/**
       - .github/workflows/task-intake.yml

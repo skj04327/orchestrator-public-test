@@ -1,5 +1,6 @@
 // Local-only private main GET adapter. Credentials go to gh, never to code checks.
 import {spawn} from 'node:child_process';
+import {ghPrivateEnvironment} from './gh-private-environment.mjs';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {collectPrivateBaseline,BASELINE_REPOSITORY} from './pinned-private-baseline.mjs';
@@ -8,10 +9,7 @@ export function ghBaselineGet(path,{signal}={}){
     !/^\/git\/trees\/[a-f0-9]{40}\?recursive=1$/.test(path)))return Promise.reject(Error('Unavailable baseline endpoint'));
   if(signal?.aborted)return Promise.reject(Error('Baseline read cancelled'));
   return new Promise((done,reject)=>{
-    const env={GH_NO_UPDATE_NOTIFIER:'1',GH_PROMPT_DISABLED:'1'};
-    for(const key of ['PATH','HOME','XDG_CONFIG_HOME','GH_CONFIG_DIR','GH_TOKEN','GITHUB_TOKEN',
-      'HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY','http_proxy','https_proxy','all_proxy','no_proxy','SSL_CERT_FILE','SSL_CERT_DIR'])
-      if(process.env[key]!==undefined)env[key]=process.env[key];
+    const env=ghPrivateEnvironment();
     const p=spawn('gh',['api','--hostname','github.com','-X','GET','repos/'+BASELINE_REPOSITORY+path],{env,stdio:['ignore','pipe','pipe']});
     let total=0,chunks=[],limited=false;
     const stop=()=>{limited=true;p.kill('SIGKILL');},timer=setTimeout(stop,30000);

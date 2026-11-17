@@ -9,7 +9,8 @@ import {promisify} from 'node:util';
 import {makeLocalReceipt} from './test-fixtures/local-receipt.mjs';
 import {independentProject} from './test-fixtures/independent-project.mjs';
 import {prepareLocalJob,runPreparedLocalJob,readLocalJob} from './local-jobs.mjs';
-import {runLocalIndependentChecks,readIndependentCheckStatus,runPinnedIndependentChecks} from './local-independent-checks.mjs';
+import {runLocalIndependentChecks,readIndependentCheckStatus,runPinnedIndependentChecks,runDiskIndependentChecks} from './local-independent-checks.mjs';
+import {collectDiskBaseline} from './disk-baseline.mjs';
 import {gitBaselineFixture} from './test-fixtures/git-baseline.mjs';
 import {runIsolatedCheck} from './isolated-check.mjs';
 import {captureCheckSnapshot} from './independent-check-input.mjs';
@@ -67,6 +68,17 @@ test('pinned GitHub protocol snapshot reaches six real Docker checks with bound 
     const path=join(f.stateRoot,f.id,'independent-report.json');
     await writeFile(path,JSON.stringify({...report,baselineProvenance:{...report.baselineProvenance,treeSha:'a'.repeat(40)}}));
     await assert.rejects(readIndependentCheckStatus(f));
+  }finally{if(f)await rm(f.root,{recursive:true,force:true});if(actions===undefined)delete process.env.GITHUB_ACTIONS;else process.env.GITHUB_ACTIONS=actions;}
+});
+test('verified disk snapshot feeds the existing six Docker checks with source provenance intact',async()=>{
+  const actions=process.env.GITHUB_ACTIONS;delete process.env.GITHUB_ACTIONS;let f;
+  try{
+    f=await fixture({pinned:true});
+    const captured=await collectDiskBaseline({root:join(f.root,'disk'),get:f.source.get,
+      streamBlob:async({sha,destination})=>writeFile(destination,Buffer.from(f.source.values.get('/git/blobs/'+sha).content,'base64'),{flag:'wx',mode:0o600})});
+    const report=await runDiskIndependentChecks({...f,diskSnapshot:captured.snapshot,imageId,timeoutMs:30000});
+    assert.equal(report.phase,'checks-passed-awaiting-review');assert.equal(report.baselineBinding,'github-main-pinned');
+    assert.equal(report.baselineProvenance.baseSha,f.source.baseSha);assert.equal(report.publishAuthorized,false);assert.equal(report.checks.length,6);await noResources();
   }finally{if(f)await rm(f.root,{recursive:true,force:true});if(actions===undefined)delete process.env.GITHUB_ACTIONS;else process.env.GITHUB_ACTIONS=actions;}
 });
 test('forged passed audit cannot hide candidate unit failure or excuse an already failing baseline',async()=>{
