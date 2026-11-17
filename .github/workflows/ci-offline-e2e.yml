@@ -24,6 +24,10 @@ on:
       - scripts/private-queue*
       - scripts/local-job*
       - scripts/local-worker-bridge*
+      - scripts/independent-check*
+      - scripts/local-independent-checks*
+      - scripts/isolated-check*
+      - scripts/docker-command.mjs
       - termux/ai
       - docker/worker/**
       - .github/workflows/task-intake.yml
@@ -62,3 +66,4 @@ jobs:
           set -euo pipefail
           ORCHESTRATOR_TEST_IMAGE="$(docker image inspect orchestrator-containment-fixture:ci --format '{{.Id}}')" node --test scripts/protected-worker.docker-test.mjs
           ORCHESTRATOR_TEST_IMAGE="$(docker image inspect orchestrator-containment-fixture:ci --format '{{.Id}}')" node --test scripts/local-worker-bridge.docker-test.mjs
+          ORCHESTRATOR_TEST_IMAGE="$(docker image inspect orchestrator-containment-fixture:ci --format '{{.Id}}')" node --test scripts/independent-checks.docker-test.mjs

@@ -1,5 +1,5 @@
 // Host-only supervisor/exporter. Never load code from the game or worker output.
-import {spawn} from 'node:child_process';
+import {docker,failure} from './docker-command.mjs';
 import {randomUUID} from 'node:crypto';
 import {resolve,basename} from 'node:path';
 import {lstat} from 'node:fs/promises';
@@ -22,33 +22,6 @@ function visit(path){
 for(const path of ['/input/private-game','/input/task-private','/opt/control'])visit(path);
 `;
 
-function failure(kind){const error=Error('Protected worker failed');error.failureKind=kind;return error;}
-async function docker(args,{input,limit=16384,timeout=30000,signal}={}){
-  if(signal?.aborted)throw failure('cancelled');
-  return new Promise((done,reject)=>{
-    const child=spawn('docker',args,{stdio:['pipe','pipe','pipe'],
-      // Docker client gets no host credentials, preload settings or daemon overrides.
-      env:{PATH:process.env.PATH}});
-    let bytes=0,chunks=[],reason=null;
-    const stop=kind=>{if(!reason){reason=kind;child.kill('SIGKILL');}};
-    const timer=setTimeout(()=>stop('timeout'),timeout);
-    const abort=()=>stop('cancelled');
-    signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();
-    const collect=(data,isOutput)=>{
-      bytes+=data.length;
-      if(bytes>limit){stop('output_limit');return;}
-      if(isOutput)chunks.push(data);
-    };
-    child.stdout.on('data',d=>collect(d,true));child.stderr.on('data',d=>collect(d,false));
-    child.stdin.on('error',()=>{});child.stdin.end(input);
-    const finish=()=>{clearTimeout(timer);signal?.removeEventListener('abort',abort);};
-    child.on('error',()=>{finish();reject(failure('docker_error'));});
-    child.on('close',code=>{finish();
-      if(reason||code!==0)reject(failure(reason||'docker_error'));
-      else done(Buffer.concat(chunks));
-    });
-  });
-}
 export async function runProtectedTask({imageId,context,controlDir,gameDir,queueDir,publicKey,
   auth={},network='none',routingMode='auto',controller='auto',timeoutMs=3000000,outputLimit=240000,signal}){
   handoffContext(context);
