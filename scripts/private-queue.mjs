@@ -72,6 +72,22 @@ async function privateWrite(path,bytes){
   const f=await open(path,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
   try{await f.writeFile(bytes);await f.sync();}finally{await f.close();}
 }
+// Trusted host state helpers, never grant these roots to a worker.
+export const ensurePrivateStateRoot=privateRoot;
+export const writePrivateStateFile=privateWrite;
+export async function readPrivateStateFile(path,limit){
+  if(!Number.isSafeInteger(limit)||limit<1||limit>800000)throw Error('Invalid state read limit');
+  await privateRoot(dirname(path));
+  // Nonblocking open lets fstat reject FIFO/device substitution before a read can hang.
+  const file=await open(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+  try{
+    const stat=await file.stat();
+    if(!stat.isFile()||stat.size>limit||(stat.mode&0o077)||stat.uid!==process.getuid())throw Error('Unsafe state file');
+    const bytes=Buffer.alloc(limit+1);let total=0;
+    while(total<bytes.length){const {bytesRead}=await file.read(bytes,total,bytes.length-total,total);if(!bytesRead)break;total+=bytesRead;}
+    if(total>limit)throw Error('Oversized state file');return bytes.subarray(0,total);
+  }finally{await file.close();}
+}
 function contentFile(response,limit){
   if(response?.type!=='file'||response.encoding!=='base64'||typeof response.content!=='string'||
     !Number.isSafeInteger(response.size)||response.size<1||response.size>limit||response.content.length>Math.ceil(limit/3)*4+20000)throw Error('Invalid private API file');
@@ -118,14 +134,28 @@ export async function receivePrivateTask({id,root,get}){
 }
 export async function readLocalReceipt({id,root}){
   validateQueueTaskId(id);const directory=await privateRoot(root);
-  const file=await open(join(directory,id+'.json'),constants.O_RDONLY|constants.O_NOFOLLOW);
-  let bytes;
-  try{const stat=await file.stat();if(!stat.isFile()||stat.size>4096||(stat.mode&0o077))throw Error('Unsafe receipt');
-    const b=Buffer.alloc(4097);const {bytesRead}=await file.read(b,0,b.length,0);if(bytesRead>4096)throw Error('Oversized receipt');bytes=b.subarray(0,bytesRead);
-  }finally{await file.close();}
+  return parseReceipt(await readPrivateStateFile(join(directory,id+'.json'),4096),id);
+}
+function parseReceipt(bytes,id){
   const value=JSON.parse(bytes.toString('utf8'));
   if(!exact(value,['schemaVersion','taskId','phase','queueCommitSha','inputManifestSha256','routing','bundleDirectory','receivedAt'])||
     value.schemaVersion!==1||value.taskId!==id||value.phase!=='received'||!SHA.test(value.queueCommitSha)||!DIGEST.test(value.inputManifestSha256)||
     !/^\.receive-[a-zA-Z0-9]{6,20}$/.test(value.bundleDirectory)||!Number.isFinite(Date.parse(value.receivedAt)))throw Error('Invalid receipt');
   return {...value,routing:routing(value.routing)};
+}
+export async function captureReceivedTask({id,root}){
+  validateQueueTaskId(id);const directory=await privateRoot(root);
+  const rawReceipt=await readPrivateStateFile(join(directory,id+'.json'),4096),receipt=parseReceipt(rawReceipt,id);
+  const bundle=await privateRoot(join(directory,receipt.bundleDirectory));
+  const rawManifest=await readPrivateStateFile(join(bundle,'ready-manifest.json'),8192);
+  if(hash(rawManifest)!==receipt.inputManifestSha256)throw Error('Received manifest changed');
+  const manifest=validateReadyManifest(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(rawManifest)),id);
+  if(JSON.stringify(manifest.routing)!==JSON.stringify(receipt.routing))throw Error('Routing changed after receipt');
+  const inputs=[];
+  for(const input of manifest.inputs){
+    const content=await readPrivateStateFile(join(bundle,'task-private',input.path),limits[input.kind]);
+    if(content.length!==input.size||hash(content)!==input.sha256)throw Error('Received input changed');
+    inputs.push({kind:input.kind,path:input.path,content});
+  }
+  return {receipt,receiptSha256:hash(rawReceipt),rawManifest,manifest,inputs};
 }

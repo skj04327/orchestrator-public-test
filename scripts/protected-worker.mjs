@@ -8,6 +8,20 @@ import {handoffContext,seal} from './private-handoff.mjs';
 import {validateBundle} from './private-task-bundle.mjs';
 import {isSafeManifestPath} from './verified-manifest.mjs';
 
+// Fixed trusted initializer only; never import/execute game, auth or copied control code.
+// Docker cp can preserve a host UID different from the nonroot worker's UID.
+export const INPUT_OWNERSHIP_SCRIPT=`
+const fs=require('node:fs');let count=0;
+function visit(path){
+  if(++count>100000)throw Error('Input tree limit');
+  const stat=fs.lstatSync(path);
+  if(!stat.isDirectory()&&!stat.isFile())throw Error('Unsupported input node');
+  fs.chownSync(path,1000,1000);
+  if(stat.isDirectory())for(const name of fs.readdirSync(path))visit(path+'/'+name);
+}
+for(const path of ['/input/private-game','/input/task-private','/opt/control'])visit(path);
+`;
+
 function failure(kind){const error=Error('Protected worker failed');error.failureKind=kind;return error;}
 async function docker(args,{input,limit=16384,timeout=30000,signal}={}){
   if(signal?.aborted)throw failure('cancelled');
@@ -60,16 +74,21 @@ export async function runProtectedTask({imageId,context,controlDir,gameDir,queue
       await request(['volume','create','--label','orchestrator.protected-worker=true',next]);
     }
     // Docker refuses cp into read-only rootfs. Seed separate volumes with a
-    // never-started container, then mount control and input read-only in worker.
+    // bounded trusted initializer, then mount control and input read-only in worker.
     seedCreated=true;
     await request(['create','--name',seed,'--label','orchestrator.protected-worker=true',
       '--pull=never','--network','none','--user','0:0',
+      '--cap-drop','ALL','--cap-add','CHOWN','--cap-add','DAC_OVERRIDE','--security-opt','no-new-privileges',
+      '--pids-limit','64','--memory','128m','--memory-swap','128m','--cpus','1','--log-driver','none',
       '--mount','type=volume,source='+inputVolume+',target=/input',
-      '--mount','type=volume,source='+controlVolume+',target=/opt/control',imageId,'node','-e','process.exit(0)']);
+      '--mount','type=volume,source='+controlVolume+',target=/opt/control',imageId,'node','-e',INPUT_OWNERSHIP_SCRIPT]);
     for(const [source,destination] of [[controlDir,'/opt/control'],[gameDir,'/input/private-game'],[queueDir,'/input/task-private']])
       await request(['cp',resolve(source)+(destination==='/opt/control'?'/.' : ''),seed+':'+destination],{limit:32768});
     await request(['cp','-',seed+':/input/'],{input:makeTarFile('auth.json',authData)});
     authData.fill(0);
+    await request(['start','--attach',seed]);
+    const seeded=JSON.parse((await request(['inspect','--format','{{json .State}}',seed])).toString());
+    if(seeded.Running||seeded.Paused||seeded.Restarting||seeded.ExitCode!==0)throw failure('input_setup_failed');
     await request(['rm','--force',seed]);seedCreated=false;
     const env={TASK_ID:context.taskId,HOME:'/work/home',CODEX_HOME:'/work/home/.codex',
       ORCHESTRATOR_AUDIT_DIR:'/work/audit',ORCHESTRATOR_ROUTING_MODE:routingMode,ORCHESTRATOR_CONTROLLER:controller,

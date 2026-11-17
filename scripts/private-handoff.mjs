@@ -9,6 +9,16 @@ const PRIVATE_PREFIX=Buffer.from('302e020100300506032b656e04220420','hex');
 const PUBLIC_PREFIX=Buffer.from('302a300506032b656e032100','hex');
 const FIELDS=['repository','taskId','runId','runAttempt','workflowSha'];
 export function handoffContext(value){
+  if(value?.kind==='local'){
+    const keys=['kind','schemaVersion','taskId','runId','queueCommitSha','receiptSha256'];
+    if(Object.keys(value).sort().join(',')!==keys.sort().join(',')||value.schemaVersion!==2||
+      typeof value.taskId!=='string'||value.taskId.length>80||! /^[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9]+$/.test(value.taskId)||
+      value.taskId==='20261115T121256Z-10360-7098'||
+      typeof value.runId!=='string'||! /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value.runId)||
+      typeof value.queueCommitSha!=='string'||! /^[a-f0-9]{40}$/.test(value.queueCommitSha)||
+      typeof value.receiptSha256!=='string'||! /^[a-f0-9]{64}$/.test(value.receiptSha256))throw Error('Invalid local context');
+    return Buffer.from(JSON.stringify(['orchestrator-local-v2',value.taskId,value.runId,value.queueCommitSha,value.receiptSha256]));
+  }
   if(!value||Object.keys(value).length!==FIELDS.length||FIELDS.some(k=>typeof value[k]!=='string')||
     value.repository!=='skj04327/orchestrator-public-test'||
     !/^[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9]+$/.test(value.taskId)||value.taskId.length>80||
