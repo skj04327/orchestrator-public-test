@@ -29,7 +29,7 @@ function run(args){return new Promise((resolve,reject)=>{
 })().catch(()=>{process.exitCode=1;});
 `);
 export function captureCheckConfiguration({imageId,timeoutMs=420000,outputLimit=240000}){
-  if(!/^sha256:[a-f0-9]{64}$/.test(imageId||'')||
+  if(typeof imageId!=='string'||!/^sha256:[a-f0-9]{64}$/.test(imageId||'')||
     !Number.isSafeInteger(timeoutMs)||timeoutMs<100||timeoutMs>420000||
     !Number.isSafeInteger(outputLimit)||outputLimit<1024||outputLimit>240000)throw failure('invalid_configuration');
   return Object.freeze({imageId,timeoutMs,outputLimit});

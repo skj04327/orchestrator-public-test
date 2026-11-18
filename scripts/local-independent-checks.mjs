@@ -9,23 +9,29 @@ import {runIsolatedCheck,captureCheckConfiguration} from './isolated-check.mjs';
 import {getPinnedBaselineProof,validatePinnedBaselineProof,collectPrivateBaseline} from './pinned-private-baseline.mjs';
 import {ghBaselineGet} from './pinned-baseline-cli.mjs';
 import {validateBundle} from './private-task-bundle.mjs';
-import {materializeDiskBaseline} from './disk-baseline.mjs';
+import {materializeDiskBaseline,diskExecutionMetadata} from './disk-baseline.mjs';
+import {captureDiskCheckInput,getDiskCheckProvenance,validateDiskCheckProvenance} from './disk-check-input.mjs';
+import {runDiskCheckStage} from './disk-baseline-check.mjs';
 const hash=b=>createHash('sha256').update(b).digest('hex');
 const exact=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join(',')===[...keys].sort().join(',');
 const digest=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
 const kinds=['resource_limit','check_failed','docker_error','timeout','output_limit','cancelled','invalid_output','invalid_state','cleanup_failed','operation_failed'];
 const order=['baseline:typecheck','baseline:unit-test','baseline:build','candidate:typecheck','candidate:unit-test','candidate:build'];
 const claimKeys=['schemaVersion','context','artifactSha256','baseSha','baselineContentSha256','candidateContentSha256','imageId'];
-const fields=c=>Object.hasOwn(c,'baselineProvenance')?[...claimKeys,'baselineProvenance']:claimKeys;
+const diskClaimKeys=['schemaVersion','inputProfile','context','artifactSha256','baseSha','baselineManifestSha256','candidateContentSha256','imageId','baselineProvenance'];
+const fields=c=>c.schemaVersion===2?diskClaimKeys:Object.hasOwn(c,'baselineProvenance')?[...claimKeys,'baselineProvenance']:claimKeys;
 async function optional(path){try{
   const value=JSON.parse((await readPrivateStateFile(path,16384)).toString('utf8'));
   if(!value||typeof value!=='object'||Array.isArray(value))throw Error('Invalid independent state');return value;
 }catch(e){if(e.code==='ENOENT')return null;throw e;}}
 function checkClaim(claim,state){
-  if(!exact(claim,fields(claim))||claim.schemaVersion!==1||!handoffContext(claim.context).equals(handoffContext(state.context))||
-    claim.artifactSha256!==state.artifactSha256||!digest(claim.artifactSha256)||!digest(claim.baselineContentSha256)||
-    !digest(claim.candidateContentSha256)||! /^[a-f0-9]{40}$/.test(claim.baseSha)||! /^sha256:[a-f0-9]{64}$/.test(claim.imageId))throw Error('Invalid independent claim');
-  if(Object.hasOwn(claim,'baselineProvenance'))validatePinnedBaselineProof(claim.baselineProvenance,claim);
+  const disk=claim.schemaVersion===2;
+  if(!exact(claim,fields(claim))||!(disk?claim.inputProfile==='disk-v1':claim.schemaVersion===1)||
+    !handoffContext(claim.context).equals(handoffContext(state.context))||claim.artifactSha256!==state.artifactSha256||!digest(claim.artifactSha256)||
+    !digest(disk?claim.baselineManifestSha256:claim.baselineContentSha256)||!digest(claim.candidateContentSha256)||
+    typeof claim.baseSha!=='string'||! /^[a-f0-9]{40}$/.test(claim.baseSha)||typeof claim.imageId!=='string'||! /^sha256:[a-f0-9]{64}$/.test(claim.imageId))throw Error('Invalid independent claim');
+  if(disk)validateDiskCheckProvenance(claim.baselineProvenance,claim);
+  else if(Object.hasOwn(claim,'baselineProvenance'))validatePinnedBaselineProof(claim.baselineProvenance,claim);
 }
 export async function readIndependentCheckStatus({id,stateRoot}){
   const state=await readLocalJob({id,stateRoot}),dir=join(stateRoot,id),claim=await optional(join(dir,'independent-claim.json'));
@@ -44,12 +50,17 @@ export async function readIndependentCheckStatus({id,stateRoot}){
     !Array.isArray(report.checks)||report.checks.length>6||
     (report.failureKind!==null&&!kinds.includes(report.failureKind)))throw Error('Invalid independent report');
   report.checks.forEach((r,i)=>{
-    if(!exact(r,['variant','stage','status','failureKind','exitCode','removed','durationMs'])||r.variant+':'+r.stage!==order[i]||
+    const [variant,stage]=order[i].split(':');
+    if(!exact(r,['variant','stage','status','failureKind','exitCode','removed','durationMs'])||(r.variant!==variant||r.stage!==stage)||
       !['passed','failed'].includes(r.status)||r.removed!==true||!Number.isSafeInteger(r.durationMs)||r.durationMs<0||
       (r.exitCode!==null&&(!Number.isInteger(r.exitCode)||r.exitCode<0||r.exitCode>255))||
       (r.status==='passed'?(r.exitCode!==0||r.failureKind!==null):!kinds.includes(r.failureKind))||
       (r.failureKind==='check_failed'&&(!Number.isInteger(r.exitCode)||r.exitCode===0)))throw Error('Invalid independent observation');
   });
+  if(claim.schemaVersion===2){
+    const infrastructure=report.checks.findIndex(r=>r.status==='failed'&&r.failureKind!=='check_failed');
+    if(infrastructure>=0&&(infrastructure!==report.checks.length-1||report.phase!=='needs-recovery'||report.failureKind!==report.checks[infrastructure].failureKind))throw Error('Invalid disk recovery history');
+  }
   const allPassed=report.checks.length===6&&report.checks.every(r=>r.status==='passed');
   if(report.phase==='checks-passed-awaiting-review'&&(!allPassed||report.failureKind!==null)||
     report.phase==='checks-failed'&&(report.checks.length!==6||allPassed||report.failureKind!==null||
@@ -68,13 +79,22 @@ export async function runLocalIndependentChecks({id,stateRoot,privateKey,baselin
   const claim={schemaVersion:1,context:state.context,artifactSha256:state.artifactSha256,baseSha:snapshot.baseSha,
     baselineContentSha256:snapshot.baselineContentSha256,candidateContentSha256:snapshot.candidateContentSha256,imageId:config.imageId};
   if(provenance){validatePinnedBaselineProof(provenance,claim);claim.baselineProvenance=provenance;}
+  return completeIndependentChecks({id,stateRoot,state,claim,config,input:snapshot,profile:'memory',signal});
+}
+async function completeIndependentChecks({id,stateRoot,state,claim,config,input,profile,signal}){
+  const dir=join(stateRoot,id);
   if(signal?.aborted)throw Error('Cancelled before claim');
   await writePrivateStateFile(join(dir,'independent-claim.json'),Buffer.from(JSON.stringify(claim)+'\n'));
   const checks=[];let phase='needs-recovery',failureKind=null;
   try{
     for(const key of order){
       const [variant,stage]=key.split(':');
-      const observed=await runIsolatedCheck({...config,payload:snapshot.payload,variant,stage,signal});checks.push(observed);
+      const raw=profile==='disk'?await runDiskCheckStage({...config,checkInput:input,variant,stage,signal}):
+        await runIsolatedCheck({...config,payload:input.payload,variant,stage,signal});
+      if(profile==='disk'&&(raw.baseSha!==claim.baseSha||raw.manifestSha256!==claim.baselineManifestSha256||raw.candidateContentSha256!==claim.candidateContentSha256||raw.publishAuthorized!==false)){
+        const error=Error('Disk observation binding failed');error.failureKind='invalid_output';throw error;
+      }
+      const observed={variant:raw.variant,stage:raw.stage,status:raw.status,failureKind:raw.failureKind!==null&&!kinds.includes(raw.failureKind)?'invalid_output':raw.failureKind,exitCode:raw.exitCode,removed:raw.removed,durationMs:raw.durationMs};checks.push(observed);
       if(observed.status==='failed'&&observed.failureKind!=='check_failed'){
         const error=Error('Independent infrastructure failed');error.failureKind=observed.failureKind;throw error;
       }
@@ -84,7 +104,7 @@ export async function runLocalIndependentChecks({id,stateRoot,privateKey,baselin
     phase=checks.every(r=>r.status==='passed')?'checks-passed-awaiting-review':'checks-failed';
   }catch(error){failureKind=kinds.includes(error.failureKind)?error.failureKind:signal?.aborted?'cancelled':'operation_failed';}
   // Terminal report append is the commit point; no automatic retry after any claim.
-  const report={...claim,phase,checks,baselineBinding:provenance?'github-main-pinned':'caller-supplied',review:'not-run',publishAuthorized:false,failureKind};
+  const report={...claim,phase,checks,baselineBinding:Object.hasOwn(claim,'baselineProvenance')?'github-main-pinned':'caller-supplied',review:'not-run',publishAuthorized:false,failureKind};
   await writePrivateStateFile(join(dir,'independent-report.json'),Buffer.from(JSON.stringify(report)+'\n'));
   return readIndependentCheckStatus({id,stateRoot});
 }
@@ -111,4 +131,17 @@ export async function runDiskIndependentChecks({id,stateRoot,privateKey,diskSnap
   const ready=await materializeDiskBaseline(diskSnapshot,{signal});
   if(ready.phase!=='materialized')return {taskId:id,...ready,publishAuthorized:false};
   return runLocalIndependentChecks({id,stateRoot,privateKey,...config,signal,baseline:ready.baseline});
+}
+
+export async function runLargeDiskIndependentChecks({id,stateRoot,privateKey,diskSnapshot,imageId,timeoutMs,outputLimit,signal}){
+  if(process.env.GITHUB_ACTIONS==='true'||signal?.aborted)throw Error('Local host required');
+  const config=captureCheckConfiguration({imageId,timeoutMs,outputLimit});
+  diskExecutionMetadata(diskSnapshot); // deny data-only/forged handles before the first await
+  const state=await readLocalJob({id,stateRoot});if(state.phase!=='awaiting-independent-validation')throw Error('Local result unavailable');
+  const encrypted=await readPrivateStateFile(join(stateRoot,id,'result.enc'),MAX_HANDOFF_BYTES);
+  if(hash(encrypted)!==state.artifactSha256)throw Error('Local artifact changed');
+  const input=captureDiskCheckInput({diskSnapshot,context:state.context,bundle:open(encrypted,privateKey,state.context)}),proof=getDiskCheckProvenance(input);
+  const claim={schemaVersion:2,inputProfile:'disk-v1',context:state.context,artifactSha256:state.artifactSha256,...proof,imageId:config.imageId};
+  checkClaim(claim,state);
+  return completeIndependentChecks({id,stateRoot,state,claim,config,input,profile:'disk',signal});
 }

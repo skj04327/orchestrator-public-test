@@ -163,3 +163,13 @@ export function createDiskBaselineArchive(snapshot,{signal}={}){
   return Object.freeze({inputStream,provenance:Object.freeze({baselineBinding:'github-main-pinned',baseSha:index.baseSha,treeSha:index.treeSha,
     manifestSha256:index.manifestSha256,fileCount:index.fileCount,totalBytes:index.totalBytes,observedAt:index.observedAt,publishAuthorized:false})});
 }
+
+// Metadata only, gated by the same non-copyable checks-purpose capability.
+export function diskExecutionMetadata(snapshot){
+  const state=handles.get(snapshot);
+  if(process.env.GITHUB_ACTIONS==='true'||!state||state.index.purpose!=='checks')throw fail('disk_execution_denied');
+  return Object.freeze({files:state.index.files,provenance:Object.freeze({schemaVersion:2,repository:BASELINE_REPOSITORY,ref:'refs/heads/main',
+    baseSha:snapshot.baseSha,treeSha:snapshot.treeSha,manifestSha256:snapshot.manifestSha256,fileCount:snapshot.fileCount,totalBytes:snapshot.totalBytes,observedAt:snapshot.observedAt})});
+}
+
+export function isSafeDiskExecutionPath(path){return diskPath(path);}

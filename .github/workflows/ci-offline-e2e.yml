@@ -33,6 +33,8 @@ on:
       - scripts/pinned-private-baseline*
       - scripts/pinned-baseline-cli*
       - scripts/disk-baseline*
+      - scripts/disk-check-input*
+      - scripts/large-disk-validation*
       - scripts/gh-blob-stream*
       - scripts/main-inventory.mjs
       - scripts/private-read-session.mjs
@@ -77,3 +79,4 @@ jobs:
           ORCHESTRATOR_TEST_IMAGE="$(docker image inspect orchestrator-containment-fixture:ci --format '{{.Id}}')" node --test scripts/local-worker-bridge.docker-test.mjs
           ORCHESTRATOR_TEST_IMAGE="$(docker image inspect orchestrator-containment-fixture:ci --format '{{.Id}}')" node --test scripts/independent-checks.docker-test.mjs
           ORCHESTRATOR_TEST_IMAGE="$(docker image inspect orchestrator-containment-fixture:ci --format '{{.Id}}')" node --test scripts/disk-baseline-check.docker-test.mjs
+          ORCHESTRATOR_TEST_IMAGE="$(docker image inspect orchestrator-containment-fixture:ci --format '{{.Id}}')" node --test scripts/large-disk-validation.docker-test.mjs
