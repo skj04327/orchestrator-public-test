@@ -6,6 +6,7 @@ import {handoffContext} from './private-handoff.mjs';
 import {assertCandidateOverlayPaths} from './independent-check-input.mjs';
 import {digestFileBuffers} from './verified-manifest.mjs';
 import {makeTarHeader} from './container-tar.mjs';
+import {createOfflineNpmArchive} from './offline-npm-runtime.mjs';
 const captures=new WeakMap(),digest=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v),sha=v=>typeof v==='string'&&/^[a-f0-9]{40}$/.test(v);
 const exact=(v,k)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join(',')===[...k].sort().join(',');
 export function validateDiskCheckProvenance(p,claim){
@@ -29,7 +30,7 @@ export function captureDiskCheckInput({diskSnapshot,context,bundle}){
   const input=Object.freeze({kind:'disk-check-input-v1',...proof});captures.set(input,{diskSnapshot,baseline,candidate,proof});return input;
 }
 export function getDiskCheckProvenance(input){const state=captures.get(input);if(!state)throw Error('Unknown disk check input');return state.proof;}
-export function createDiskCheckArchive(input,{variant,signal}={}){
+export function createDiskCheckArchive(input,{variant,offlineDependencies,signal}={}){
   const state=captures.get(input);if(!state||!['baseline','candidate'].includes(variant))throw Error('Unknown disk check input');
   const archive=createDiskBaselineArchive(state.diskSnapshot,{signal});let overlayArchive=null;
   if(variant==='candidate'){
@@ -40,5 +41,6 @@ export function createDiskCheckArchive(input,{variant,signal}={}){
     for(let i=0;i<files.length;i++)if(!seen.has(files[i].sha256)){seen.add(files[i].sha256);add('candidate-'+files[i].sha256,Buffer.from(state.candidate[i].content));}
     parts.push(Buffer.alloc(1024));overlayArchive=Buffer.concat(parts);
   }
-  return {...archive,overlayArchive,proof:state.proof};
+  const dependencyArchive=createOfflineNpmArchive(offlineDependencies,state.diskSnapshot,{signal});
+  return {...archive,overlayArchive,dependencyArchive,proof:state.proof};
 }
