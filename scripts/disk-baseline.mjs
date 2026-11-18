@@ -173,3 +173,22 @@ export function diskExecutionMetadata(snapshot){
 }
 
 export function isSafeDiskExecutionPath(path){return diskPath(path);}
+
+// Read only the root npm manifests from an eligible snapshot, with the original Git integrity checks.
+export async function readDiskNpmManifests(snapshot,{signal}={}){
+  const {files}=diskExecutionMetadata(snapshot);
+  // npm ci would prefer a root shrinkwrap over the lockfile attested by this profile.
+  if(files.some(file=>file.path==='npm-shrinkwrap.json'))throw fail('invalid_dependency_lock');
+  const {root,index}=handles.get(snapshot);
+  const blobs=await ensurePrivateStateRoot(join(root,index.bundleDirectory,'blobs'));
+  const manifests=[];
+  for(const name of ['package.json','package-lock.json']){
+    const entry=files.find(file=>file.path===name);
+    if(!entry||entry.size>1048576)throw fail('invalid_dependency_lock');
+    const {content}=await verifyBlob(join(blobs,entry.sha),entry,{collect:true,check:()=>{
+      if(signal?.aborted)throw fail('cancelled');
+    }});
+    manifests.push(Buffer.from(content,'base64'));
+  }
+  return manifests;
+}
