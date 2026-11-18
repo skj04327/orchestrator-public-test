@@ -26,12 +26,17 @@ function files(value,candidate=false){
   }
   return captured;
 }
+export function assertCandidateOverlayPaths(baselinePaths,candidatePaths){
+  const paths=new Set(baselinePaths),all=new Set([...baselinePaths,...candidatePaths]);
+  const testPath=p=>/(?:^|\/)(?:tests?|__tests__)\//i.test(p)||/\.(?:test|spec)\.[a-z0-9]+$/i.test(p);
+  if(candidatePaths.some(p=>testPath(p)&&paths.has(p)))throw Error('Existing tests cannot be replaced');
+  for(const p of all){const parts=p.split('/');parts.pop();while(parts.length){if(all.has(parts.join('/')))throw Error('Check file/directory collision');parts.pop();}}
+}
 function normalize(value){
   if(!exact(value,['baseline','candidate']))throw Error('Invalid check snapshot');
   const baseline=files(value.baseline),candidate=files(value.candidate,true),paths=new Set(baseline.map(f=>f.path));
   if(!paths.has('package.json')||!paths.has('package-lock.json'))throw Error('Missing locked npm project');
-  const testPath=p=>/(?:^|\/)(?:tests?|__tests__)\//i.test(p)||/\.(?:test|spec)\.[a-z0-9]+$/i.test(p);
-  if(candidate.some(f=>testPath(f.path)&&paths.has(f.path)))throw Error('Existing tests cannot be replaced');
+  assertCandidateOverlayPaths([...paths],candidate.map(f=>f.path));
   // Check cross-set file/directory collisions as well as collisions inside either set.
   const combined=new Map(baseline.map(f=>[f.path,f]));for(const f of candidate)combined.set(f.path,f);
   files([...combined.values()]);return {baseline,candidate};
