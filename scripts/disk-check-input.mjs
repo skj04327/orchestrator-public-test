@@ -1,6 +1,6 @@
 // Trusted-host opaque overlay. Candidate bytes are bounded separately from disk assets.
 import {createHash} from 'node:crypto';
-import {diskExecutionMetadata,createDiskBaselineArchive,isSafeDiskExecutionPath} from './disk-baseline.mjs';
+import {diskExecutionMetadata,createDiskBaselineArchive,isSafeDiskExecutionPath,validateDiskProjection} from './disk-baseline.mjs';
 import {validateBundle} from './private-task-bundle.mjs';
 import {handoffContext} from './private-handoff.mjs';
 import {assertCandidateOverlayPaths} from './independent-check-input.mjs';
@@ -10,11 +10,14 @@ import {createOfflineNpmArchive} from './offline-npm-runtime.mjs';
 const captures=new WeakMap(),digest=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v),sha=v=>typeof v==='string'&&/^[a-f0-9]{40}$/.test(v);
 const exact=(v,k)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join(',')===[...k].sort().join(',');
 export function validateDiskCheckProvenance(p,claim){
-  if(!exact(p,['schemaVersion','repository','ref','baseSha','treeSha','manifestSha256','fileCount','totalBytes','observedAt'])||p.schemaVersion!==2||
+  const keys=['schemaVersion','repository','ref','baseSha','treeSha','manifestSha256','fileCount','totalBytes','observedAt'];
+  const projected=p&&Object.hasOwn(p,'projection');
+  if(!exact(p,projected?[...keys,'projection']:keys)||p.schemaVersion!==2||
     p.repository!=='skj04327/the-twilight-of-korea'||p.ref!=='refs/heads/main'||!sha(p.baseSha)||!sha(p.treeSha)||!digest(p.manifestSha256)||
     p.baseSha!==claim.baseSha||p.manifestSha256!==claim.baselineManifestSha256||
     !Number.isSafeInteger(p.fileCount)||p.fileCount<1||p.fileCount>10000||!Number.isSafeInteger(p.totalBytes)||p.totalBytes<0||p.totalBytes>1073741824||
-    typeof p.observedAt!=='string'||!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(p.observedAt)||!Number.isFinite(Date.parse(p.observedAt)))throw Error('Invalid disk provenance');
+    typeof p.observedAt!=='string'||!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(p.observedAt)||!Number.isFinite(Date.parse(p.observedAt))||
+    (projected&&(!validateDiskProjection(p.projection)||p.fileCount+p.projection.excludedFileCount>10000)))throw Error('Invalid disk provenance');
 }
 export function captureDiskCheckInput({diskSnapshot,context,bundle}){
   if(context?.kind!=='local')throw Error('Local check context required');handoffContext(context);

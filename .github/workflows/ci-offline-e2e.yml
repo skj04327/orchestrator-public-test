@@ -34,6 +34,7 @@ on:
       - scripts/pinned-baseline-cli*
       - scripts/disk-baseline*
       - scripts/disk-check-input*
+      - scripts/disk-execution-policy.test.mjs
       - scripts/offline-npm-runtime*
       - scripts/large-disk-validation*
       - scripts/gh-blob-stream*
