@@ -26,5 +26,20 @@ appendFileSync(${JSON.stringify(log)},path+'\\n');if(!v)process.exit(93);if(a.in
     assert.equal(status.phase,'captured-disk');const calls=await readFile(log,'utf8');
     for(const args of [['run',cache],['capture',cache,'extra']])await assert.rejects(exec(process.execPath,[cli,...args],{env}));
     await assert.rejects(exec(process.execPath,[cli,'capture',cache],{env:{...env,GITHUB_ACTIONS:'true'}}));assert.equal(await readFile(log,'utf8'),calls);
+    const projected=await gitBaselineFixture({files:[file('package.json','{}'),file('package-lock.json','{}'),file('.codex/config.toml','SYNTHETIC_EXCLUDE')]});
+    await writeFile(store,JSON.stringify(Object.fromEntries(projected.values)));
+    await writeFile(log,'');
+    const preflight=JSON.parse((await exec(process.execPath,[cli,'preflight'],{env})).stdout);
+    assert.equal(preflight.phase,'projection-available');
+    assert.doesNotMatch(await readFile(log,'utf8'),/blobs/);
+    const projectedRoot=join(root,'projected');
+    const result=JSON.parse((await exec(process.execPath,[cli,'capture-projected',projectedRoot,preflight.projectionSha256],{env})).stdout);
+    assert.equal(result.phase,'captured-projected');
+    assert.equal(result.excludedFileCount,1);
+    const latest=JSON.parse((await exec(process.execPath,[cli,'status',projectedRoot,projected.baseSha],{env})).stdout);
+    assert.equal(latest.phase,'captured-projected');
+    assert.equal(latest.projectionSha256,preflight.projectionSha256);
+    assert.doesNotMatch(await readFile(log,'utf8'),new RegExp(projected.entries.find(entry=>entry.path==='.codex/config.toml').sha));
+
   }finally{await rm(root,{recursive:true,force:true});}
 });

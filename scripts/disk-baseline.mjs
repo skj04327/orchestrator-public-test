@@ -16,8 +16,72 @@ function diskPath(path,allowSensitive=false){
   return typeof path==='string'&&path.length<=240&&path.split('/').length<=32&&/^[\p{L}\p{M}\p{N}_.@ /()-]+$/u.test(path)&&
     path.split('/').every(p=>p&&p!=='.'&&p!=='..'&&(allowSensitive||!/^(?:\.git|node_modules|\.env.*|\.npmrc|\.codex|\.claude|\.gemini|\.aws|\.ssh|\.config|\.docker|\.azure|\.kube|\.gnupg|\.npm|\.cache|\.local)$/.test(p)));
 }
-const manifestDigest=index=>createHash('sha256').update(JSON.stringify(['disk-baseline-v1',index.schemaVersion,index.purpose,index.repository,index.ref,
-  index.baseSha,index.treeSha,index.observedAt,index.bundleDirectory,index.files])).digest('hex');
+const PROJECTED='checks-projected';
+const CONFIG_PROJECTION='omit-root-agent-config-v1';
+const indexFields=['schemaVersion','purpose','repository','ref','baseSha','treeSha','observedAt','fileCount','totalBytes','manifestSha256','bundleDirectory','treeEntries','files'];
+const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const manifestDigest=index=>hash(['disk-baseline-v1',index.schemaVersion,index.purpose,index.repository,index.ref,
+  index.baseSha,index.treeSha,index.observedAt,index.bundleDirectory,index.files,...(index.projection?[index.projection]:[])]);
+const countBytes=entries=>entries.reduce((sum,entry)=>sum+entry.size,0);
+const withinCapacity=(entries,totalBytes)=>entries.length<=10000&&totalBytes<=MAX_TOTAL&&entries.every(entry=>entry.size<=MAX_DISK_BLOB);
+const hasProject=entries=>entries.some(e=>e.path==='package.json')&&entries.some(e=>e.path==='package-lock.json');
+const capturePhase=purpose=>purpose===PROJECTED?'captured-projected':purpose==='checks'?'captured-disk':'captured-data-only';
+function uniqueBlobs(entries){
+  const unique=new Map();
+  for(const entry of entries){
+    const prior=unique.get(entry.sha);
+    if(prior&&prior.size!==entry.size)throw fail('invalid_blob_size');
+    unique.set(entry.sha,entry);
+  }
+  return unique;
+}
+const withinRequestBudget=unique=>unique.size+6<=4000;
+
+
+function projectExecutionInput({baseSha,treeSha,entries}){
+  const excluded=entries.filter(entry=>!diskPath(entry.path));
+  if(excluded.length<1||excluded.length>8||excluded.some(entry=>
+    !/^(?:\.claude|\.codex|\.gemini)\/[a-zA-Z0-9_.-]{1,100}$/.test(entry.path)||
+    entry.mode!=='100644'||entry.size>65536))return null;
+  const excludedShas=new Set(excluded.map(entry=>entry.sha));
+  const selected=entries.filter(entry=>diskPath(entry.path));
+  // A kept path sharing the same blob would still deliver the excluded bytes.
+  if(selected.some(entry=>excludedShas.has(entry.sha)))return null;
+  return {entries:selected,projection:Object.freeze({
+    policy:CONFIG_PROJECTION,excludedFileCount:excluded.length,
+    sha256:hash([CONFIG_PROJECTION,baseSha,treeSha,excluded.map(entry=>[entry.path,entry.mode,entry.sha,entry.size])])
+  })};
+}
+
+export function validateDiskProjection(projection){
+  return exact(projection,['policy','excludedFileCount','sha256'])&&projection.policy===CONFIG_PROJECTION&&
+    Number.isSafeInteger(projection.excludedFileCount)&&projection.excludedFileCount>=1&&projection.excludedFileCount<=8&&digest(projection.sha256);
+}
+function sameProjection(left,right){
+  return validateDiskProjection(left)&&left.policy===right.policy&&left.excludedFileCount===right.excludedFileCount&&left.sha256===right.sha256;
+}
+export async function inspectDiskExecutionInput({get,signal,timeoutMs=90000}){
+  if(process.env.GITHUB_ACTIONS==='true')throw fail('invalid_configuration');
+  const session=privateReadSession({get,signal,timeoutMs,requestLimit:6});
+  try{
+    const inventory=await readMainInventory({request:session.request});
+    if(await readPrivateMainHead(session.request)!==inventory.baseSha)throw fail('main_moved');
+    session.checkStopped();
+    const {baseSha,treeSha,entries,totalBytes}=inventory;
+    const summary={baseSha,treeSha,fileCount:entries.length,totalBytes,publishAuthorized:false};
+    if(!withinCapacity(entries,totalBytes))return {phase:'blocked-capacity',...summary};
+    if(!hasProject(entries))return {phase:'blocked-input-policy',...summary};
+    if(entries.every(entry=>diskPath(entry.path))){
+      const phase=withinRequestBudget(uniqueBlobs(entries))?'eligible-for-capture':'blocked-request-budget';
+      return {phase,...summary};
+    }
+    const projected=projectExecutionInput(inventory);
+    if(!projected)return {phase:'blocked-input-policy',...summary};
+    if(!withinRequestBudget(uniqueBlobs(projected.entries)))return {phase:'blocked-request-budget',...summary};
+    return {phase:'projection-available',...summary,excludedFileCount:projected.projection.excludedFileCount,
+      projectionSha256:projected.projection.sha256};
+  }finally{session.dispose();}
+}
 async function readPrivate(path,limit){
   const f=await open(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
   try{
@@ -41,15 +105,24 @@ async function verifyBlob(path,entry,{collect=false,check=()=>{}}={}){
   }finally{await f.close();}
 }
 function validateIndex(value,baseSha){
-  if(!exact(value,['schemaVersion','purpose','repository','ref','baseSha','treeSha','observedAt','fileCount','totalBytes','manifestSha256','bundleDirectory','treeEntries','files'])||
-    !['checks','data-only'].includes(value.purpose)||
+  const projected=value?.purpose===PROJECTED;
+  if(!exact(value,projected?[...indexFields,'projection']:indexFields)||
+    !['checks','data-only',PROJECTED].includes(value.purpose)||
     value.schemaVersion!==2||value.repository!==BASELINE_REPOSITORY||value.ref!=='refs/heads/main'||value.baseSha!==baseSha||!sha(value.baseSha)||!sha(value.treeSha)||
     typeof value.bundleDirectory!=='string'||!/^\.disk-[a-zA-Z0-9]{6,20}$/.test(value.bundleDirectory)||
     typeof value.observedAt!=='string'||!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value.observedAt)||!Number.isFinite(Date.parse(value.observedAt))||
     !digest(value.manifestSha256)||!Array.isArray(value.files))throw fail('invalid_cache_index');
-  const entries=checkTree({sha:value.treeSha,truncated:false,tree:value.treeEntries},value.treeSha),total=entries.reduce((n,e)=>n+e.size,0);
-  if(entries.length<1||entries.length>10000||entries.length!==value.fileCount||value.files.length!==entries.length||
-    total!==value.totalBytes||total>MAX_TOTAL||entries.some(e=>e.size>MAX_DISK_BLOB||!diskPath(e.path,value.purpose==='data-only')))throw fail('invalid_cache_index');
+  const fullEntries=checkTree({sha:value.treeSha,truncated:false,tree:value.treeEntries},value.treeSha);
+  if(!withinCapacity(fullEntries,countBytes(fullEntries)))throw fail('invalid_cache_index');
+  let entries=fullEntries;
+  if(projected){
+    const selection=projectExecutionInput({...value,entries:fullEntries});
+    if(!selection||!sameProjection(value.projection,selection.projection))throw fail('invalid_cache_index');
+    entries=selection.entries;
+    value={...value,projection:selection.projection};
+  }
+  if(!hasProject(entries)||entries.length!==value.fileCount||value.files.length!==entries.length||
+    countBytes(entries)!==value.totalBytes||entries.some(e=>!diskPath(e.path,value.purpose==='data-only')))throw fail('invalid_cache_index');
   const files=value.files.map((f,i)=>{
     const e=entries[i];if(!exact(f,['path','mode','sha','size','sha256'])||f.path!==e.path||f.mode!==e.mode||f.sha!==e.sha||f.size!==e.size||!digest(f.sha256))throw fail('invalid_cache_index');
     return {path:f.path,mode:f.mode,sha:f.sha,size:f.size,sha256:f.sha256};
@@ -60,41 +133,56 @@ function validateIndex(value,baseSha){
 }
 function handle(root,index){
   for(const f of index.files)Object.freeze(f);Object.freeze(index.files);Object.freeze(index);
-  const snapshot=Object.freeze({kind:'disk-baseline-v1',executionEligible:index.purpose==='checks',baseSha:index.baseSha,treeSha:index.treeSha,fileCount:index.fileCount,totalBytes:index.totalBytes,
-    manifestSha256:index.manifestSha256,observedAt:index.observedAt});handles.set(snapshot,{root,index});return snapshot;
+  const snapshot=Object.freeze({kind:'disk-baseline-v1',executionEligible:index.purpose!=='data-only',baseSha:index.baseSha,treeSha:index.treeSha,fileCount:index.fileCount,totalBytes:index.totalBytes,
+    manifestSha256:index.manifestSha256,observedAt:index.observedAt,...(index.projection?{projection:index.projection}:{})});handles.set(snapshot,{root,index});return snapshot;
 }
 export async function openDiskBaseline({root,baseSha,signal}){
+  return reopenDiskBaseline({root,baseSha,signal});
+}
+async function reopenDiskBaseline({root,baseSha,signal,expectedPurpose}){
   if(process.env.GITHUB_ACTIONS==='true'||!sha(baseSha))throw fail('invalid_configuration');
   const directory=await ensurePrivateStateRoot(root),index=validateIndex(JSON.parse((await readPrivate(join(directory,baseSha+'.json'),MAX_INDEX)).toString('utf8')),baseSha);
+  if(expectedPurpose!==undefined&&index.purpose!==expectedPurpose)throw fail('cache_provenance_mismatch');
   const blobs=await ensurePrivateStateRoot(join(directory,index.bundleDirectory,'blobs')),done=new Set();
   for(const f of index.files)if(!done.has(f.sha)){
     await verifyBlob(join(blobs,f.sha),f,{check:()=>{if(signal?.aborted)throw fail('cancelled');}});done.add(f.sha);
   }
   if(signal?.aborted)throw fail('cancelled');return handle(directory,index);
 }
-export async function collectDiskBaseline({root,get,streamBlob=fetchGitBlobToFile,expectedBaseSha,signal,timeoutMs=1800000,onProgress,purpose='checks'}){
-  if(process.env.GITHUB_ACTIONS==='true'||!['checks','data-only'].includes(purpose)||typeof streamBlob!=='function'||expectedBaseSha!==undefined&&!sha(expectedBaseSha))throw fail('invalid_configuration');
+export async function collectDiskBaseline({root,get,streamBlob=fetchGitBlobToFile,expectedBaseSha,signal,timeoutMs=1800000,onProgress,purpose='checks',projectionSha256}){
+  if(process.env.GITHUB_ACTIONS==='true'||!['checks','data-only',PROJECTED].includes(purpose)||
+    (purpose===PROJECTED?!digest(projectionSha256):projectionSha256!==undefined)||typeof streamBlob!=='function'||expectedBaseSha!==undefined&&!sha(expectedBaseSha))throw fail('invalid_configuration');
   const directory=await ensurePrivateStateRoot(root),session=privateReadSession({get,signal,timeoutMs,requestLimit:4000});
-  const {request,checkStopped}=session;let stage=null,claimed=false,committed=false,baseSha;
+  const {request,checkStopped}=session;let stage=null,committed=false,baseSha;
   try{
     const inventory=await readMainInventory({request,expectedBaseSha});baseSha=inventory.baseSha;
-    const {treeSha,entries,totalBytes,treeEntries}=inventory,summary={baseSha,treeSha,fileCount:entries.length,totalBytes,publishAuthorized:false};
+    const {treeSha,treeEntries}=inventory;
+    let {entries,totalBytes}=inventory;
+    const summary={baseSha,treeSha,fileCount:entries.length,totalBytes,publishAuthorized:false};
     checkStopped();
-    if(entries.length>10000||totalBytes>MAX_TOTAL||entries.some(e=>e.size>MAX_DISK_BLOB))return {phase:'blocked-capacity',...summary};
-    if(!entries.length||entries.some(e=>!diskPath(e.path,purpose==='data-only'))||!entries.some(e=>e.path==='package.json')||!entries.some(e=>e.path==='package-lock.json'))return {phase:'blocked-input-policy',...summary};
-    const unique=new Map();for(const e of entries){const old=unique.get(e.sha);if(old&&old.size!==e.size)throw fail('invalid_blob_size');unique.set(e.sha,e);}
-    if(unique.size+6>4000)return {phase:'blocked-request-budget',...summary};
+    if(!withinCapacity(entries,totalBytes))return {phase:'blocked-capacity',...summary};
+    let projection;
+    if(purpose===PROJECTED){
+      const selected=projectExecutionInput(inventory);
+      if(!selected||selected.projection.sha256!==projectionSha256)throw fail('projection_mismatch');
+      ({entries,projection}=selected);
+      totalBytes=countBytes(entries);
+      Object.assign(summary,{fileCount:entries.length,totalBytes,projection});
+    }
+    if(!hasProject(entries)||entries.some(e=>!diskPath(e.path,purpose==='data-only')))return {phase:'blocked-input-policy',...summary};
+    const unique=uniqueBlobs(entries);
+    if(!withinRequestBudget(unique))return {phase:'blocked-request-budget',...summary};
     let existing=false;
     try{await readPrivate(join(directory,baseSha+'.json'),MAX_INDEX);existing=true;}catch(e){if(e.code!=='ENOENT')throw e;}
     if(existing){
-      const snapshot=await openDiskBaseline({root:directory,baseSha,signal:session.signal});
-      if(snapshot.treeSha!==treeSha||snapshot.executionEligible!==(purpose==='checks'))throw fail('cache_provenance_mismatch');
-      if(await readPrivateMainHead(request)!==baseSha)throw fail('main_moved');checkStopped();return {phase:purpose==='checks'?'captured-disk':'captured-data-only',...summary,snapshot};
+      const snapshot=await reopenDiskBaseline({root:directory,baseSha,signal:session.signal,expectedPurpose:purpose});
+      if(snapshot.treeSha!==treeSha||snapshot.projection?.sha256!==projectionSha256)throw fail('cache_provenance_mismatch');
+      if(await readPrivateMainHead(request)!==baseSha)throw fail('main_moved');checkStopped();return {phase:capturePhase(purpose),...summary,snapshot};
     }
     const bytes=[...unique.values()].reduce((n,e)=>n+e.size,0),space=await statfs(directory,{bigint:true});
     if(space.bavail*space.bsize<BigInt(bytes)+67108864n)return {phase:'blocked-disk-space',...summary};
     stage=await mkdtemp(join(directory,'.disk-'));
-    await writePrivateStateFile(join(directory,baseSha+'.claim'),Buffer.from(JSON.stringify({schemaVersion:1,baseSha,bundleDirectory:basename(stage)})+'\n'));claimed=true;
+    await writePrivateStateFile(join(directory,baseSha+'.claim'),Buffer.from(JSON.stringify({schemaVersion:1,baseSha,bundleDirectory:basename(stage)})+'\n'));
     const blobs=join(stage,'blobs');await mkdir(blobs,{mode:0o700});
     const objects=[...unique.values()],verified=new Map();let cursor=0,received=0,error=null;
     async function worker(){
@@ -108,12 +196,12 @@ export async function collectDiskBaseline({root,get,streamBlob=fetchGitBlobToFil
     if(await readPrivateMainHead(request)!==baseSha)throw fail('main_moved');checkStopped();
     const files=entries.map(e=>({path:e.path,mode:e.mode,sha:e.sha,size:e.size,sha256:verified.get(e.sha)}));
     const index={schemaVersion:2,purpose,repository:BASELINE_REPOSITORY,ref:'refs/heads/main',baseSha,treeSha,observedAt:new Date().toISOString(),fileCount:entries.length,totalBytes,
-      manifestSha256:'',bundleDirectory:basename(stage),treeEntries,files};
+      manifestSha256:'',bundleDirectory:basename(stage),treeEntries,files,...(projection?{projection}:{})};
     index.manifestSha256=manifestDigest(index);
     validateIndex(index,baseSha);const encoded=Buffer.from(JSON.stringify(index)+'\n');if(encoded.length>MAX_INDEX)throw fail('index_capacity');
     await writePrivateStateFile(join(stage,'index.json'),encoded);checkStopped();
     await link(join(stage,'index.json'),join(directory,baseSha+'.json'));committed=true;
-    return {phase:purpose==='checks'?'captured-disk':'captured-data-only',...summary,snapshot:handle(directory,index)};
+    return {phase:capturePhase(purpose),...summary,snapshot:handle(directory,index)};
   }finally{session.dispose();if(stage&&!committed)await rm(stage,{recursive:true,force:true});}
 }
 export function getMaterializedDiskProof(baseline){return materialized.get(baseline)??null;}
@@ -133,7 +221,7 @@ export async function materializeDiskBaseline(snapshot,{signal}={}){
 // Trusted host transfer only; data-only handles can never expose an execution stream.
 export function createDiskBaselineArchive(snapshot,{signal}={}){
   const state=handles.get(snapshot);
-  if(process.env.GITHUB_ACTIONS==='true'||!state||state.index.purpose!=='checks')throw fail('disk_execution_denied');
+  if(process.env.GITHUB_ACTIONS==='true'||!state||state.index.purpose==='data-only')throw fail('disk_execution_denied');
   const {root,index}=state;let used=false;
   const check=()=>{if(signal?.aborted)throw fail('cancelled');};check();
   const manifest=Buffer.from(JSON.stringify({schemaVersion:1,files:index.files,totalBytes:index.totalBytes})+'\n');
@@ -160,16 +248,16 @@ export function createDiskBaselineArchive(snapshot,{signal}={}){
     check();yield Buffer.alloc(1024);
   }
   const inputStream=Object.freeze({[Symbol.asyncIterator](){if(used)throw fail('archive_already_consumed');used=true;return generate();}});
-  return Object.freeze({inputStream,provenance:Object.freeze({baselineBinding:'github-main-pinned',baseSha:index.baseSha,treeSha:index.treeSha,
-    manifestSha256:index.manifestSha256,fileCount:index.fileCount,totalBytes:index.totalBytes,observedAt:index.observedAt,publishAuthorized:false})});
+  return Object.freeze({inputStream,provenance:Object.freeze({baselineBinding:index.projection?'github-main-projected':'github-main-pinned',baseSha:index.baseSha,treeSha:index.treeSha,
+    manifestSha256:index.manifestSha256,fileCount:index.fileCount,totalBytes:index.totalBytes,observedAt:index.observedAt,...(index.projection?{projection:index.projection}:{}),publishAuthorized:false})});
 }
 
 // Metadata only, gated by the same non-copyable checks-purpose capability.
 export function diskExecutionMetadata(snapshot){
   const state=handles.get(snapshot);
-  if(process.env.GITHUB_ACTIONS==='true'||!state||state.index.purpose!=='checks')throw fail('disk_execution_denied');
+  if(process.env.GITHUB_ACTIONS==='true'||!state||state.index.purpose==='data-only')throw fail('disk_execution_denied');
   return Object.freeze({files:state.index.files,provenance:Object.freeze({schemaVersion:2,repository:BASELINE_REPOSITORY,ref:'refs/heads/main',
-    baseSha:snapshot.baseSha,treeSha:snapshot.treeSha,manifestSha256:snapshot.manifestSha256,fileCount:snapshot.fileCount,totalBytes:snapshot.totalBytes,observedAt:snapshot.observedAt})});
+    baseSha:snapshot.baseSha,treeSha:snapshot.treeSha,manifestSha256:snapshot.manifestSha256,fileCount:snapshot.fileCount,totalBytes:snapshot.totalBytes,observedAt:snapshot.observedAt,...(snapshot.projection?{projection:snapshot.projection}:{})})});
 }
 
 export function isSafeDiskExecutionPath(path){return diskPath(path);}

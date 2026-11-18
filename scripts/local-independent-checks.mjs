@@ -21,6 +21,10 @@ const order=['baseline:typecheck','baseline:unit-test','baseline:build','candida
 const claimKeys=['schemaVersion','context','artifactSha256','baseSha','baselineContentSha256','candidateContentSha256','imageId'];
 const diskClaimKeys=['schemaVersion','inputProfile','context','artifactSha256','baseSha','baselineManifestSha256','candidateContentSha256','imageId','baselineProvenance'];
 const fields=c=>c.schemaVersion===2?(Object.hasOwn(c,'offlineDependencies')?[...diskClaimKeys,'offlineDependencies']:diskClaimKeys):Object.hasOwn(c,'baselineProvenance')?[...claimKeys,'baselineProvenance']:claimKeys;
+function baselineBinding(claim){
+  if(claim.baselineProvenance?.projection)return 'github-main-projected';
+  return Object.hasOwn(claim,'baselineProvenance')?'github-main-pinned':'caller-supplied';
+}
 async function optional(path){try{
   const value=JSON.parse((await readPrivateStateFile(path,16384)).toString('utf8'));
   if(!value||typeof value!=='object'||Array.isArray(value))throw Error('Invalid independent state');return value;
@@ -46,7 +50,7 @@ export async function readIndependentCheckStatus({id,stateRoot}){
   checkClaim(claim,state);
   const report=await optional(join(dir,'independent-report.json'));
   if(!report)return {taskId:id,phase:'running-or-needs-recovery',publishAuthorized:false};
-  const keys=fields(claim),binding=Object.hasOwn(claim,'baselineProvenance')?'github-main-pinned':'caller-supplied';
+  const keys=fields(claim),binding=baselineBinding(claim);
   if(!exact(report,[...keys,'phase','checks','baselineBinding','review','publishAuthorized','failureKind'])||
     keys.some(k=>JSON.stringify(report[k])!==JSON.stringify(claim[k]))||report.publishAuthorized!==false||
     report.baselineBinding!==binding||report.review!=='not-run'||
@@ -95,7 +99,8 @@ async function completeIndependentChecks({id,stateRoot,state,claim,config,input,
       const [variant,stage]=key.split(':');
       const raw=profile==='disk'?await runDiskCheckStage({...config,checkInput:input,variant,stage,offlineDependencies,signal}):
         await runIsolatedCheck({...config,payload:input.payload,variant,stage,signal});
-      if(profile==='disk'&&(raw.baseSha!==claim.baseSha||raw.manifestSha256!==claim.baselineManifestSha256||raw.candidateContentSha256!==claim.candidateContentSha256||raw.publishAuthorized!==false)){
+      if(profile==='disk'&&(raw.baseSha!==claim.baseSha||raw.manifestSha256!==claim.baselineManifestSha256||raw.candidateContentSha256!==claim.candidateContentSha256||
+        raw.baselineBinding!==baselineBinding(claim)||raw.projection?.sha256!==claim.baselineProvenance.projection?.sha256||raw.publishAuthorized!==false)){
         const error=Error('Disk observation binding failed');error.failureKind='invalid_output';throw error;
       }
       const observed={variant:raw.variant,stage:raw.stage,status:raw.status,failureKind:raw.failureKind!==null&&!kinds.includes(raw.failureKind)?'invalid_output':raw.failureKind,exitCode:raw.exitCode,removed:raw.removed,durationMs:raw.durationMs};checks.push(observed);
@@ -108,7 +113,7 @@ async function completeIndependentChecks({id,stateRoot,state,claim,config,input,
     phase=checks.every(r=>r.status==='passed')?'checks-passed-awaiting-review':'checks-failed';
   }catch(error){failureKind=kinds.includes(error.failureKind)?error.failureKind:signal?.aborted?'cancelled':'operation_failed';}
   // Terminal report append is the commit point; no automatic retry after any claim.
-  const report={...claim,phase,checks,baselineBinding:Object.hasOwn(claim,'baselineProvenance')?'github-main-pinned':'caller-supplied',review:'not-run',publishAuthorized:false,failureKind};
+  const report={...claim,phase,checks,baselineBinding:baselineBinding(claim),review:'not-run',publishAuthorized:false,failureKind};
   await writePrivateStateFile(join(dir,'independent-report.json'),Buffer.from(JSON.stringify(report)+'\n'));
   return readIndependentCheckStatus({id,stateRoot});
 }

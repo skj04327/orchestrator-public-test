@@ -31,7 +31,7 @@ test('candidate archive reaches a fresh real Docker stage with captured bytes an
   }finally{await rm(root,{recursive:true,force:true});}
 });
 
-function lifecycleProject(baseline,dependencies=[]){
+function lifecycleProject(baseline,dependencies=[],projected=false){
   const replace=(path,b)=>{const old=baseline.files.find(f=>f.path===path);if(old)old.content=Buffer.from(b).toString('base64');else baseline.files.push(encoded(path,b));};
   const pkg=JSON.parse(Buffer.from(baseline.files.find(f=>f.path==='package.json').content,'base64'));
   pkg.scripts={postinstall:'node install.cjs',typecheck:'node stage.cjs typecheck',test:'node stage.cjs unit-test',build:'node stage.cjs build'};
@@ -54,6 +54,7 @@ for(const name of ${JSON.stringify(dependencies.map(dep=>dep.name))}){
   assert.equal(fs.readFileSync('node_modules/'+name+'/install-marker','utf8'),'ci');
   assert.throws(()=>fs.writeFileSync('/input/npm-dependency-0.tgz','FORGED'));
 }
+if(${projected})assert.equal(fs.existsSync('.codex/config.toml'),false);
 assert.equal(fs.readFileSync('npm-installed','utf8'),'yes');assert.equal(fs.existsSync('stage-marker'),false);
 assert.equal(createHash('sha256').update(fs.readFileSync('public/고려 지도.bin')).digest('hex'),${JSON.stringify(hash)});
 assert.equal(process.getuid(),1000);for(const k of ['GITHUB_TOKEN','PRIVATE_GAME_WRITE_TOKEN','OPENAI_API_KEY','LOCAL_DECRYPTION_KEY'])assert.equal(process.env[k],undefined);
@@ -84,20 +85,23 @@ async function syntheticTarballs(root){
   return {tarballRoot,dependencies};
 }
 async function localFixture(root,options={}){
-  const {withDependencies,...projectOptions}=options;
+  const {withDependencies,projected=false,...projectOptions}=options;
   const packages=withDependencies?await syntheticTarballs(root):null;
   const f=await makeLocalReceipt(root),job=await prepareLocalJob(f);
-  const source=await fixture(root,{context:job.context,transform:baseline=>lifecycleProject(baseline,packages?.dependencies),...projectOptions});
+  const source=await fixture(root,{context:job.context,purpose:projected?'checks-projected':'checks',transform:baseline=>{
+    lifecycleProject(baseline,packages?.dependencies,projected);
+    if(projected)baseline.files.push(encoded('.codex/config.toml','SYNTHETIC_EXCLUDED_CONFIG'));
+  },...projectOptions});
   const key=recipientKey('SYNTHETIC_LOCAL_KEY',job.context);
   await runPreparedLocalJob({...f,publicKey:key.publicKey,worker:async()=>({removed:true,executionOutcome:'success',encrypted:seal(source.bundle,key.publicKey,job.context)})});
   const offlineDependencies=packages?await prepareOfflineNpmDependencies({diskSnapshot:source.snapshot,tarballRoot:packages.tarballRoot}):undefined;
   return {...f,context:job.context,diskSnapshot:source.snapshot,privateKey:key.privateKey,offlineDependencies};
 }
 async function noResources(){for(const a of [['ps','-a','--filter','label=orchestrator.disk-baseline-check=true','--format','{{.Names}}'],['volume','ls','--filter','label=orchestrator.disk-baseline-check=true','--format','{{.Name}}']])assert.equal((await promisify(execFile)('docker',a,{env:{PATH:process.env.PATH}})).stdout.trim(),'');}
-test('six large-disk checks install verified local dependencies offline and preserve lifecycle, shared claim and private provenance',async()=>{
+test('six projected disk checks install locked dependencies offline and report the excluded configuration',async()=>{
   const root=await mkdtemp(join(tmpdir(),'disk-six-real-'));
   try{
-    const f=await localFixture(root,{withDependencies:true}),options={...f,imageId,timeoutMs:30000};
+    const f=await localFixture(root,{withDependencies:true,projected:true}),options={...f,imageId,timeoutMs:30000};
     const missing=await stageRunner.runDiskBaselineStage({diskSnapshot:f.diskSnapshot,imageId,stage:'build',timeoutMs:30000});
     assert.equal(missing.failureKind,'check_failed');
     await assert.rejects(independent.runLargeDiskIndependentChecks({...options,offlineDependencies:structuredClone(f.offlineDependencies)}));
@@ -105,21 +109,29 @@ test('six large-disk checks install verified local dependencies offline and pres
     assert.equal(competing.filter(r=>r.status==='fulfilled').length,1);
     const report=competing.find(r=>r.status==='fulfilled').value;
     assert.equal(report.schemaVersion,2);assert.equal(report.inputProfile,'disk-v1');assert.equal(report.phase,'checks-passed-awaiting-review');assert.equal(report.review,'not-run');assert.equal(report.publishAuthorized,false);assert.equal(report.checks.length,6);assert.ok(report.checks.every(r=>r.status==='passed'&&r.removed));
+    assert.equal(report.baselineBinding,'github-main-projected');
+    assert.deepEqual(report.baselineProvenance.projection,f.diskSnapshot.projection);
+    assert.equal(report.baselineProvenance.projection.excludedFileCount,1);
     assert.equal(report.offlineDependencies.tarballCount,2);
     assert.equal(report.offlineDependencies.baselineManifestSha256,f.diskSnapshot.manifestSha256);
     assert.equal(report.baselineManifestSha256,f.diskSnapshot.manifestSha256);assert.equal((await readLocalJob(f)).phase,'awaiting-independent-validation');
     await assert.rejects(independent.runLargeDiskIndependentChecks(options),e=>e.code==='EEXIST');await noResources();
     const path=join(f.stateRoot,f.id,'independent-report.json'),raw=await readFile(path,'utf8');assert.ok(!raw.includes('export const'));assert.ok(!raw.includes('SYNTHETIC_LOCAL_KEY'));
+    assert.doesNotMatch(raw,/config\.toml|SYNTHETIC_EXCLUDED_CONFIG/);
     const wrongDependency=structuredClone(report);
     wrongDependency.offlineDependencies.lockSha256='a'.repeat(64);
     const wrongStage=structuredClone(report);
     wrongStage.checks[0].variant='candidate';
-    for(const bad of [wrongDependency,wrongStage]){
+    const wrongBinding={...report,baselineBinding:'github-main-pinned'};
+    for(const bad of [wrongDependency,wrongStage,wrongBinding]){
       await writeFile(path,JSON.stringify(bad));
       await assert.rejects(independent.readIndependentCheckStatus(f));
     }
     await writeFile(path,raw);
-    const cli=await promisify(execFile)(process.execPath,['scripts/independent-check-cli.mjs','status',f.id,f.stateRoot],{env:{...process.env,GITHUB_ACTIONS:''}});assert.equal(JSON.parse(cli.stdout).inputProfile,'disk-v1');
+    const cli=await promisify(execFile)(process.execPath,['scripts/independent-check-cli.mjs','status',f.id,f.stateRoot],{env:{...process.env,GITHUB_ACTIONS:''}});const status=JSON.parse(cli.stdout);
+    assert.equal(status.inputProfile,'disk-v1');
+    assert.equal(status.baselineBinding,'github-main-projected');
+    assert.deepEqual(status.baselineProvenance.projection,f.diskSnapshot.projection);
   }finally{await rm(root,{recursive:true,force:true});}
 });
 test('baseline or candidate command failure still compares all six stages and forged worker audit never grants pass',async()=>{
