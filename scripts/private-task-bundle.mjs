@@ -3,6 +3,15 @@ import {collectVerifiedFiles,digestFileBuffers,isVerifiedDigest} from './verifie
 import {handoffContext} from './private-handoff.mjs';
 import {finalizePrivateReport} from './persist-private-audit.mjs';
 
+export function decodeBundleFiles(files){
+  return files.map(f=>{
+    if(typeof f?.content!=='string'||f.content.length>86668||! /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(f.content))throw Error('Invalid file encoding');
+    const content=Buffer.from(f.content,'base64');
+    if(content.toString('base64')!==f.content)throw Error('Invalid file encoding');
+    return {path:f.path,content};
+  });
+}
+
 export function validateBundle(bundle,context){
   if(!bundle||bundle.version!==1||!handoffContext(bundle.context).equals(handoffContext(context))||
     !['success','failure','cancelled'].includes(bundle.executionOutcome))throw Error('Invalid bundle context');
@@ -29,12 +38,7 @@ export function validateBundle(bundle,context){
     route.controller===route.reviewer||route.developer!=='codex')throw Error('Invalid independent route');
   const review=events.filter(e=>e.stage==='review').at(-1);
   if(review.actor!==route.reviewer)throw Error('Reviewer does not match route');
-  const files=bundle.files.map(f=>{
-    if(typeof f?.content!=='string'||f.content.length>86668||! /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(f.content))throw Error('Invalid file encoding');
-    const content=Buffer.from(f.content,'base64');
-    if(content.toString('base64')!==f.content)throw Error('Invalid file encoding');
-    return {path:f.path,content};
-  });
+  const files=decodeBundleFiles(bundle.files);
   if(digestFileBuffers(files)!==result.verifiedContentSha256||
     new Set(result.paths).size!==files.length||files.some(f=>!result.paths.includes(f.path)))
     throw Error('Source changed after review');

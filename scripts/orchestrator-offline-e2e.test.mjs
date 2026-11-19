@@ -97,6 +97,20 @@ const readLines=async path=>(await readFile(path,'utf8')).split('\n').filter(Boo
 const report=async f=>JSON.parse(await readFile(join(f.root,'private-audit',ID+'.json'),'utf8'));
 const exists=async path=>access(path).then(()=>true,()=>false);
 
+test('the combined worker refuses authenticated execution before starting installation or project tools',async()=>{
+  const f=await fixture('Synthetic private task',plan);
+  try{
+    for(const auth of [{ORCHESTRATOR_WORKER_HAS_AUTH:'1'},{CLAUDE_CODE_OAUTH_TOKEN:'SYNTHETIC_TOKEN'}]){
+      const run=await cmd(process.execPath,[RUNNER],{cwd:f.root,env:{...f.env,...auth}});
+      assert.equal(run.code,1);
+      assert.match(run.err,/AUTHENTICATED_WORKER_REQUIRES_SEPARATE_CHECKS/);
+      assert.doesNotMatch(run.err,/SYNTHETIC_TOKEN/);
+    }
+    assert.deepEqual(await readLines(f.callLog),[]);
+    assert.deepEqual(await readLines(f.fetchLog),[]);
+  }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
 test('isolated publisher blocks corrupt transport and failed worker before any GitHub call',async()=>{
   for(const outcome of ['success','failure']){
     const f=await fixture('Synthetic harmless code task',plan);

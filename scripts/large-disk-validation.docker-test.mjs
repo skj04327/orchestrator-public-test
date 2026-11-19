@@ -8,6 +8,7 @@ import {createHash} from 'node:crypto';
 import {makeLocalReceipt} from './test-fixtures/local-receipt.mjs';
 import {prepareLocalJob,runPreparedLocalJob,readLocalJob} from './local-jobs.mjs';
 import {recipientKey,seal} from './private-handoff.mjs';
+import {sealLocalCandidate} from './local-candidate-bundle.mjs';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import * as stageRunner from './disk-baseline-check.mjs';
@@ -42,10 +43,17 @@ function lifecycleProject(baseline,dependencies=[],projected=false){
     for(const dep of dependencies)lock.packages['node_modules/'+dep.name]={version:'1.0.0',resolved:'https://registry.npmjs.org/'+dep.name+'/-/'+dep.name+'-1.0.0.tgz',integrity:dep.integrity,hasInstallScript:true};
     replace('package-lock.json',JSON.stringify(lock));
   }
-  replace('package.json',JSON.stringify(pkg));replace('install.cjs',"require('fs').writeFileSync('npm-installed','yes')");
+  replace('package.json',JSON.stringify(pkg));
+  replace('check-credentials.cjs',`
+const fs=require('node:fs'),assert=require('node:assert/strict');
+for(const key of ['GITHUB_TOKEN','PRIVATE_GAME_WRITE_TOKEN','OPENAI_API_KEY','LOCAL_DECRYPTION_KEY','CLAUDE_CODE_OAUTH_TOKEN','CODEX_HOME','GEMINI_API_KEY'])assert.equal(process.env[key],undefined);
+for(const name of ['/input/auth.json','/work/home/.codex/auth.json','/work/home/.gemini/antigravity-cli/antigravity-oauth-token'])assert.equal(fs.existsSync(name),false);
+`);
+  replace('install.cjs',"require('./check-credentials.cjs');require('fs').writeFileSync('npm-installed','yes')");
   const hash=createHash('sha256').update(Buffer.alloc(40*1024*1024,7)).digest('hex');
   replace('stage.cjs',`
 const fs=require('fs'),assert=require('assert/strict'),{spawnSync}=require('child_process'),{createHash}=require('crypto'),stage=process.argv[2];
+require('./check-credentials.cjs');
 assert.equal(stage,fs.readFileSync('/proc/1/cmdline','utf8').split('\\0')[2]);
 assert.equal(process.env.npm_lifecycle_event,{'typecheck':'typecheck','unit-test':'test','build':'build'}[stage]);
 assert.deepEqual(process.argv.slice(3),stage==='unit-test'?['--reporter=dot']:[]);
@@ -57,7 +65,7 @@ for(const name of ${JSON.stringify(dependencies.map(dep=>dep.name))}){
 if(${projected})assert.equal(fs.existsSync('.codex/config.toml'),false);
 assert.equal(fs.readFileSync('npm-installed','utf8'),'yes');assert.equal(fs.existsSync('stage-marker'),false);
 assert.equal(createHash('sha256').update(fs.readFileSync('public/고려 지도.bin')).digest('hex'),${JSON.stringify(hash)});
-assert.equal(process.getuid(),1000);for(const k of ['GITHUB_TOKEN','PRIVATE_GAME_WRITE_TOKEN','OPENAI_API_KEY','LOCAL_DECRYPTION_KEY'])assert.equal(process.env[k],undefined);
+assert.equal(process.getuid(),1000);
 assert.throws(()=>fs.writeFileSync('/input/manifest.json','FORGED'));
 let result;
 if(stage==='typecheck')result=spawnSync(process.execPath,['--check','src/status.ts'],{stdio:'inherit'});
@@ -85,7 +93,7 @@ async function syntheticTarballs(root){
   return {tarballRoot,dependencies};
 }
 async function localFixture(root,options={}){
-  const {withDependencies,projected=false,...projectOptions}=options;
+  const {withDependencies,projected=false,candidateOnly=false,...projectOptions}=options;
   const packages=withDependencies?await syntheticTarballs(root):null;
   const f=await makeLocalReceipt(root),job=await prepareLocalJob(f);
   const source=await fixture(root,{context:job.context,purpose:projected?'checks-projected':'checks',transform:baseline=>{
@@ -93,15 +101,17 @@ async function localFixture(root,options={}){
     if(projected)baseline.files.push(encoded('.codex/config.toml','SYNTHETIC_EXCLUDED_CONFIG'));
   },...projectOptions});
   const key=recipientKey('SYNTHETIC_LOCAL_KEY',job.context);
-  await runPreparedLocalJob({...f,publicKey:key.publicKey,worker:async()=>({removed:true,executionOutcome:'success',encrypted:seal(source.bundle,key.publicKey,job.context)})});
+  await runPreparedLocalJob({...f,publicKey:key.publicKey,worker:async({context,publicKey})=>({removed:true,executionOutcome:'success',
+    encrypted:candidateOnly?sealLocalCandidate({context,publicKey,baseSha:source.snapshot.baseSha,
+      files:source.bundle.files.map(({path,content})=>({path,content:Buffer.from(content,'base64')}))}):seal(source.bundle,publicKey,context)})});
   const offlineDependencies=packages?await prepareOfflineNpmDependencies({diskSnapshot:source.snapshot,tarballRoot:packages.tarballRoot}):undefined;
   return {...f,context:job.context,diskSnapshot:source.snapshot,privateKey:key.privateKey,offlineDependencies};
 }
 async function noResources(){for(const a of [['ps','-a','--filter','label=orchestrator.disk-baseline-check=true','--format','{{.Names}}'],['volume','ls','--filter','label=orchestrator.disk-baseline-check=true','--format','{{.Name}}']])assert.equal((await promisify(execFile)('docker',a,{env:{PATH:process.env.PATH}})).stdout.trim(),'');}
-test('six projected disk checks install locked dependencies offline and report the excluded configuration',async()=>{
+test('six projected disk checks accept candidate-only handoff and install locked dependencies without credentials',async()=>{
   const root=await mkdtemp(join(tmpdir(),'disk-six-real-'));
   try{
-    const f=await localFixture(root,{withDependencies:true,projected:true}),options={...f,imageId,timeoutMs:30000};
+    const f=await localFixture(root,{withDependencies:true,projected:true,candidateOnly:true}),options={...f,imageId,timeoutMs:30000};
     const missing=await stageRunner.runDiskBaselineStage({diskSnapshot:f.diskSnapshot,imageId,stage:'build',timeoutMs:30000});
     assert.equal(missing.failureKind,'check_failed');
     await assert.rejects(independent.runLargeDiskIndependentChecks({...options,offlineDependencies:structuredClone(f.offlineDependencies)}));

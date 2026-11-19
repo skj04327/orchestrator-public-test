@@ -1,7 +1,6 @@
 // Trusted host snapshot boundary. A supplied commit is a caller claim, not GitHub proof.
 import {createHash} from 'node:crypto';
-import {handoffContext} from './private-handoff.mjs';
-import {validateBundle} from './private-task-bundle.mjs';
+import {validateLocalCheckBundle} from './local-candidate-bundle.mjs';
 import {digestFileBuffers,isSafeManifestPath} from './verified-manifest.mjs';
 const exact=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join(',')===[...keys].sort().join(',');
 export const MAX_CHECK_PAYLOAD=46000000;
@@ -59,9 +58,8 @@ function digest(files){
 }
 export function baselineContentDigest(value){return digest(files(value));}
 export function captureCheckSnapshot({context,bundle,baseline}){
-  if(context?.kind!=='local')throw Error('Local check context required');handoffContext(context);
-  const verified=validateBundle(bundle,context);
-  if(!verified.result||!exact(baseline,['baseSha','files'])||baseline.baseSha!==verified.baseSha)throw Error('Wrong baseline commit');
+  const verified=validateLocalCheckBundle(bundle,context);
+  if(!verified.files.length||!exact(baseline,['baseSha','files'])||baseline.baseSha!==verified.baseSha)throw Error('Wrong baseline commit');
   const snapshot=normalize({baseline:baseline.files,candidate:verified.files.map(f=>({path:f.path,content:f.content.toString('base64')}))});
   const payload=Buffer.from(JSON.stringify(snapshot));if(payload.length>MAX_CHECK_PAYLOAD)throw Error('Oversized check payload');
   return {payload,baseSha:verified.baseSha,baselineContentSha256:digest(snapshot.baseline),

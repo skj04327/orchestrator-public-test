@@ -8,7 +8,7 @@ import {captureCheckSnapshot,captureBaselineInput} from './independent-check-inp
 import {runIsolatedCheck,captureCheckConfiguration} from './isolated-check.mjs';
 import {getPinnedBaselineProof,validatePinnedBaselineProof,collectPrivateBaseline} from './pinned-private-baseline.mjs';
 import {ghBaselineGet} from './pinned-baseline-cli.mjs';
-import {validateBundle} from './private-task-bundle.mjs';
+import {validateLocalCheckBundle} from './local-candidate-bundle.mjs';
 import {materializeDiskBaseline,diskExecutionMetadata} from './disk-baseline.mjs';
 import {captureDiskCheckInput,getDiskCheckProvenance,validateDiskCheckProvenance} from './disk-check-input.mjs';
 import {runDiskCheckStage,DISK_UNIT_TEST_TIMEOUT_MAX} from './disk-baseline-check.mjs';
@@ -128,8 +128,8 @@ export async function runPinnedIndependentChecks({id,stateRoot,privateKey,imageI
   if(state.phase!=='awaiting-independent-validation')throw Error('Local result unavailable');
   const encrypted=await readPrivateStateFile(join(stateRoot,id,'result.enc'),MAX_HANDOFF_BYTES);
   if(hash(encrypted)!==state.artifactSha256)throw Error('Local artifact changed');
-  const bundle=validateBundle(open(encrypted,privateKey,state.context),state.context);
-  if(!bundle.result)throw Error('Local source unavailable');
+  const bundle=validateLocalCheckBundle(open(encrypted,privateKey,state.context),state.context);
+  if(!bundle.files.length)throw Error('Local source unavailable');
   const collected=await collectPrivateBaseline({get,expectedBaseSha:bundle.baseSha,signal,timeoutMs:snapshotTimeoutMs});
   if(collected.phase!=='captured')return {taskId:id,phase:collected.phase,fileCount:collected.fileCount,totalBytes:collected.totalBytes,publishAuthorized:false};
   return runLocalIndependentChecks({id,stateRoot,privateKey,...config,signal,baseline:collected.baseline});
@@ -140,8 +140,8 @@ export async function runDiskIndependentChecks({id,stateRoot,privateKey,diskSnap
   if(state.phase!=='awaiting-independent-validation')throw Error('Local result unavailable');
   const encrypted=await readPrivateStateFile(join(stateRoot,id,'result.enc'),MAX_HANDOFF_BYTES);
   if(hash(encrypted)!==state.artifactSha256)throw Error('Local artifact changed');
-  const bundle=validateBundle(open(encrypted,privateKey,state.context),state.context);
-  if(!bundle.result||diskSnapshot?.baseSha!==bundle.baseSha)throw Error('Wrong disk baseline');
+  const bundle=validateLocalCheckBundle(open(encrypted,privateKey,state.context),state.context);
+  if(!bundle.files.length||diskSnapshot?.baseSha!==bundle.baseSha)throw Error('Wrong disk baseline');
   const ready=await materializeDiskBaseline(diskSnapshot,{signal});
   if(ready.phase!=='materialized')return {taskId:id,...ready,publishAuthorized:false};
   return runLocalIndependentChecks({id,stateRoot,privateKey,...config,signal,baseline:ready.baseline});

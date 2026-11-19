@@ -17,7 +17,8 @@ if(auth.gemini){
   await writeFile(join(dir,'antigravity-oauth-token'),auth.gemini,{mode:0o600});
 }
 const child=spawn('node',['/opt/control/execute-private-task.mjs'],{
-  cwd:root,stdio:'inherit',env:{...process.env,CLAUDE_CODE_OAUTH_TOKEN:auth.claude||''}
+  cwd:root,stdio:'inherit',env:{...process.env,CLAUDE_CODE_OAUTH_TOKEN:auth.claude||'',
+    ORCHESTRATOR_WORKER_HAS_AUTH:auth.codex||auth.gemini||auth.claude?'1':'0'}
 });
 child.on('error',()=>{process.exitCode=1;});
 child.on('exit',(code)=>{process.exitCode=code===0?0:1;});
