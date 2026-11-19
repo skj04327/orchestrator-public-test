@@ -51,16 +51,16 @@ function run(args,cwd='/work/project'){return new Promise((resolve,reject)=>{
 })().catch(()=>{process.exitCode=1;});
 `);
 const DEFAULT_TIMEOUT=420000;
-const BASELINE_TEST_TIMEOUT=900000;
-function configuration({imageId,stage,timeoutMs,outputLimit,signal},baseline=false){
-  const cap=baseline&&stage==='unit-test'?BASELINE_TEST_TIMEOUT:DEFAULT_TIMEOUT;
+export const DISK_UNIT_TEST_TIMEOUT_MAX=900000;
+function configuration({imageId,stage,timeoutMs,outputLimit,signal}){
+  const cap=stage==='unit-test'?DISK_UNIT_TEST_TIMEOUT_MAX:DEFAULT_TIMEOUT;
   if(process.env.GITHUB_ACTIONS==='true'||!Object.hasOwn(stages,stage)||
     !Number.isSafeInteger(timeoutMs)||timeoutMs>cap)throw failure('invalid_configuration');
   captureCheckConfiguration({imageId,timeoutMs:Math.min(timeoutMs,DEFAULT_TIMEOUT),outputLimit});
   if(signal?.aborted)throw failure('cancelled');
 }
 export async function runDiskBaselineStage({diskSnapshot,offlineDependencies,imageId,stage,timeoutMs=DEFAULT_TIMEOUT,outputLimit=240000,signal,diagnosticsRoot}){
-  const config={imageId,stage,timeoutMs,outputLimit,signal};configuration(config,true);
+  const config={imageId,stage,timeoutMs,outputLimit,signal};configuration(config);
   const archive=createDiskBaselineArchive(diskSnapshot,{signal});
   const dependencyArchive=createOfflineNpmArchive(offlineDependencies,diskSnapshot,{signal});
   let privateDiagnostics;

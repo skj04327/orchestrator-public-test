@@ -11,7 +11,8 @@ import {ghBaselineGet} from './pinned-baseline-cli.mjs';
 import {validateBundle} from './private-task-bundle.mjs';
 import {materializeDiskBaseline,diskExecutionMetadata} from './disk-baseline.mjs';
 import {captureDiskCheckInput,getDiskCheckProvenance,validateDiskCheckProvenance} from './disk-check-input.mjs';
-import {runDiskCheckStage} from './disk-baseline-check.mjs';
+import {runDiskCheckStage,DISK_UNIT_TEST_TIMEOUT_MAX} from './disk-baseline-check.mjs';
+import {failure} from './docker-command.mjs';
 import {offlineNpmProvenance,validateOfflineNpmProvenance} from './offline-npm-runtime.mjs';
 const hash=b=>createHash('sha256').update(b).digest('hex');
 const exact=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join(',')===[...keys].sort().join(',');
@@ -20,7 +21,8 @@ const kinds=['resource_limit','check_failed','docker_error','timeout','output_li
 const order=['baseline:typecheck','baseline:unit-test','baseline:build','candidate:typecheck','candidate:unit-test','candidate:build'];
 const claimKeys=['schemaVersion','context','artifactSha256','baseSha','baselineContentSha256','candidateContentSha256','imageId'];
 const diskClaimKeys=['schemaVersion','inputProfile','context','artifactSha256','baseSha','baselineManifestSha256','candidateContentSha256','imageId','baselineProvenance'];
-const fields=c=>c.schemaVersion===2?(Object.hasOwn(c,'offlineDependencies')?[...diskClaimKeys,'offlineDependencies']:diskClaimKeys):Object.hasOwn(c,'baselineProvenance')?[...claimKeys,'baselineProvenance']:claimKeys;
+const fields=c=>c.schemaVersion===2?[...diskClaimKeys,...['offlineDependencies','unitTestTimeoutMs'].filter(key=>Object.hasOwn(c,key))]:Object.hasOwn(c,'baselineProvenance')?[...claimKeys,'baselineProvenance']:claimKeys;
+const validUnitTestTimeout=value=>Number.isSafeInteger(value)&&value>=100&&value<=DISK_UNIT_TEST_TIMEOUT_MAX;
 function baselineBinding(claim){
   if(claim.baselineProvenance?.projection)return 'github-main-projected';
   return Object.hasOwn(claim,'baselineProvenance')?'github-main-pinned':'caller-supplied';
@@ -38,6 +40,7 @@ function checkClaim(claim,state){
   if(disk){
     validateDiskCheckProvenance(claim.baselineProvenance,claim);
     if(Object.hasOwn(claim,'offlineDependencies'))validateOfflineNpmProvenance(claim.offlineDependencies,claim.baselineManifestSha256);
+    if(Object.hasOwn(claim,'unitTestTimeoutMs')&&!validUnitTestTimeout(claim.unitTestTimeoutMs))throw Error('Invalid unit test deadline');
   }
   else if(Object.hasOwn(claim,'baselineProvenance'))validatePinnedBaselineProof(claim.baselineProvenance,claim);
 }
@@ -97,7 +100,9 @@ async function completeIndependentChecks({id,stateRoot,state,claim,config,input,
   try{
     for(const key of order){
       const [variant,stage]=key.split(':');
-      const raw=profile==='disk'?await runDiskCheckStage({...config,checkInput:input,variant,stage,offlineDependencies,signal}):
+      const raw=profile==='disk'?await runDiskCheckStage({...config,
+        timeoutMs:stage==='unit-test'?(claim.unitTestTimeoutMs??config.timeoutMs):config.timeoutMs,
+        checkInput:input,variant,stage,offlineDependencies,signal}):
         await runIsolatedCheck({...config,payload:input.payload,variant,stage,signal});
       if(profile==='disk'&&(raw.baseSha!==claim.baseSha||raw.manifestSha256!==claim.baselineManifestSha256||raw.candidateContentSha256!==claim.candidateContentSha256||
         raw.baselineBinding!==baselineBinding(claim)||raw.projection?.sha256!==claim.baselineProvenance.projection?.sha256||raw.publishAuthorized!==false)){
@@ -142,9 +147,10 @@ export async function runDiskIndependentChecks({id,stateRoot,privateKey,diskSnap
   return runLocalIndependentChecks({id,stateRoot,privateKey,...config,signal,baseline:ready.baseline});
 }
 
-export async function runLargeDiskIndependentChecks({id,stateRoot,privateKey,diskSnapshot,offlineDependencies,imageId,timeoutMs,outputLimit,signal}){
+export async function runLargeDiskIndependentChecks({id,stateRoot,privateKey,diskSnapshot,offlineDependencies,imageId,timeoutMs,unitTestTimeoutMs,outputLimit,signal}){
   if(process.env.GITHUB_ACTIONS==='true'||signal?.aborted)throw Error('Local host required');
   const config=captureCheckConfiguration({imageId,timeoutMs,outputLimit});
+  if(unitTestTimeoutMs!==undefined&&!validUnitTestTimeout(unitTestTimeoutMs))throw failure('invalid_configuration');
   diskExecutionMetadata(diskSnapshot); // deny data-only/forged handles before the first await
   const dependencyProof=offlineNpmProvenance(offlineDependencies,diskSnapshot);
   const state=await readLocalJob({id,stateRoot});if(state.phase!=='awaiting-independent-validation')throw Error('Local result unavailable');
@@ -152,6 +158,7 @@ export async function runLargeDiskIndependentChecks({id,stateRoot,privateKey,dis
   if(hash(encrypted)!==state.artifactSha256)throw Error('Local artifact changed');
   const input=captureDiskCheckInput({diskSnapshot,context:state.context,bundle:open(encrypted,privateKey,state.context)}),proof=getDiskCheckProvenance(input);
   const claim={schemaVersion:2,inputProfile:'disk-v1',context:state.context,artifactSha256:state.artifactSha256,...proof,imageId:config.imageId,
+    ...(unitTestTimeoutMs===undefined?{}:{unitTestTimeoutMs}),
     ...(dependencyProof?{offlineDependencies:dependencyProof}:{})};
   checkClaim(claim,state);
   return completeIndependentChecks({id,stateRoot,state,claim,config,input,profile:'disk',offlineDependencies,signal});

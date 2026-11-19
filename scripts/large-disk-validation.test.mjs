@@ -43,6 +43,41 @@ test('large runner refuses copied/data-only inputs and invalid runtime before cr
     }
   }finally{await rm(root,{recursive:true,force:true});}
 });
+test('the explicit extended deadline reaches both full disk unit tests only',async()=>{
+  const {diskCheckFixture}=await import('./test-fixtures/disk-check.mjs');
+  const root=await mkdtemp(join(tmpdir(),'disk-unit-deadline-'));
+  const originalPath=process.env.PATH,originalSetTimeout=globalThis.setTimeout;
+  try{
+    const f=await makeLocalReceipt(root),prepared=await prepareLocalJob(f);
+    const source=await diskCheckFixture(root,{context:prepared.context}),key=recipientKey('SYNTHETIC',prepared.context);
+    await runPreparedLocalJob({...f,publicKey:key.publicKey,worker:async()=>({removed:true,executionOutcome:'success',encrypted:seal(source.bundle,key.publicKey,prepared.context)})});
+    const options={...f,diskSnapshot:source.snapshot,privateKey:key.privateKey,imageId:'sha256:'+'a'.repeat(64)};
+    await writeFile(join(root,'docker'),`#!/usr/bin/env node
+const command=process.argv[2];
+if(command==='cp')process.stdin.resume();
+if(command==='inspect')console.log(JSON.stringify({Status:'exited',Running:false,Paused:false,Restarting:false,OOMKilled:false,Dead:false,Pid:0,Error:'',ExitCode:0,StartedAt:'2026-11-18T00:00:00.123Z',FinishedAt:'2026-11-18T00:00:01.123Z'}));
+`,{mode:0o755});
+    process.env.PATH=root+':'+originalPath;
+    for(const unitTestTimeoutMs of [null,'900000',99,900001]){
+      await assert.rejects(checks.runLargeDiskIndependentChecks({...options,unitTestTimeoutMs}),{failureKind:'invalid_configuration'});
+    }
+    let extendedTimers=0;
+    globalThis.setTimeout=(callback,timeout,...args)=>{
+      if(timeout===900000)extendedTimers++;
+      return originalSetTimeout(callback,timeout,...args);
+    };
+    const result=await checks.runLargeDiskIndependentChecks({...options,unitTestTimeoutMs:900000});
+    assert.equal(result.phase,'checks-passed-awaiting-review');
+    assert.equal(result.checks.length,6);
+    assert.equal(result.unitTestTimeoutMs,900000);
+    assert.equal(result.publishAuthorized,false);
+    assert.equal(extendedTimers,2);
+  }finally{
+    process.env.PATH=originalPath;
+    globalThis.setTimeout=originalSetTimeout;
+    await rm(root,{recursive:true,force:true});
+  }
+});
 test('final real artifact read cancellation cannot commit a passed disk-profile report',async()=>{
   const fs=(await import('node:fs')).default,{syncBuiltinESMExports}=await import('node:module'),{diskCheckFixture}=await import('./test-fixtures/disk-check.mjs');
   const root=await mkdtemp(join(tmpdir(),'disk-final-cancel-')),oldPath=process.env.PATH,originalOpen=fs.promises.open;
