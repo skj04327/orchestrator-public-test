@@ -1,4 +1,4 @@
-// Trusted host imports pre-existing tarballs. The lockfile never drives a network request.
+// Verify local tarballs and prepare the read-only package input for isolated npm checks.
 import {createHash} from 'node:crypto';
 import {constants} from 'node:fs';
 import {lstat,open} from 'node:fs/promises';
@@ -9,8 +9,8 @@ import {makeTarHeader} from './container-tar.mjs';
 import {failure} from './docker-command.mjs';
 
 const MAX_ENTRIES = 1000;
-const MAX_TARBALL = 32 * 1024 * 1024;
-const MAX_TOTAL = 256 * 1024 * 1024;
+export const MAX_TARBALL = 32 * 1024 * 1024;
+export const MAX_TOTAL = 256 * 1024 * 1024;
 const registryTarball = /^https:\/\/registry\.npmjs\.org\/(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+\/-\/[a-zA-Z0-9_.+-]+\.tgz$/;
 const digest = value => typeof value === 'string' && value.length === 64 && /^[a-f0-9]+$/.test(value);
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -117,6 +117,16 @@ async function* verifiedTarball(root,entry,signal,{emit=false}={}) {
   if (emit && entry.size % 512) yield Buffer.alloc(512 - entry.size % 512);
 }
 
+// Caller supplies the validated private root and a content-addressed name from the lock plan.
+export async function measureOfflineNpmTarball(root,filename,{signal,maxBytes=MAX_TARBALL}={}) {
+  if(typeof filename!=='string'||! /^[a-f0-9]{128}\.tgz$/.test(filename))throw failure('invalid_configuration');
+  checkSignal(signal);
+  const info=await lstat(join(root,filename));
+  if(!info.isFile()||info.size<1||info.size>Math.min(MAX_TARBALL,maxBytes))throw failure('unsafe_cache_blob');
+  for await(const unused of verifiedTarball(root,{filename,size:info.size},signal))void unused;
+  return info.size;
+}
+
 export async function prepareOfflineNpmDependencies({diskSnapshot,tarballRoot,signal}) {
   const plan = await planOfflineNpmDependencies({diskSnapshot,signal});
   const root = await ensurePrivateStateRoot(tarballRoot);
@@ -124,12 +134,8 @@ export async function prepareOfflineNpmDependencies({diskSnapshot,tarballRoot,si
   let totalBytes = 0;
   for (const {filename} of plan.packages) {
     checkSignal(signal);
-    const info = await lstat(join(root,filename));
-    if (!info.isFile() || info.size < 1 || info.size > MAX_TARBALL || totalBytes + info.size > MAX_TOTAL) {
-      throw failure('unsafe_cache_blob');
-    }
-    const entry = {filename,size:info.size,archiveName:'npm-dependency-'+entries.length+'.tgz'};
-    for await (const unused of verifiedTarball(root,entry,signal)) void unused;
+    const size=await measureOfflineNpmTarball(root,filename,{signal,maxBytes:MAX_TOTAL-totalBytes});
+    const entry={filename,size,archiveName:'npm-dependency-'+entries.length+'.tgz'};
     entries.push(entry);
     totalBytes += entry.size;
   }

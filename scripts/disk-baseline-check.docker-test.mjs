@@ -1,7 +1,7 @@
 // Synthetic sources only. No game cache, provider authentication or network.
 import test,{before,after} from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,writeFile,rm} from 'node:fs/promises';
+import {mkdtemp,readFile,stat,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
@@ -9,6 +9,7 @@ import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import * as checker from './disk-baseline-check.mjs';
 import {collectDiskBaseline} from './disk-baseline.mjs';
+import {prepareOfflineNpmDependencies} from './offline-npm-runtime.mjs';
 import {gitBaselineFixture} from './test-fixtures/git-baseline.mjs';
 const imageId=process.env.ORCHESTRATOR_TEST_IMAGE,actions=process.env.GITHUB_ACTIONS;
 if(!/^sha256:[a-f0-9]{64}$/.test(imageId||''))throw Error('Actual local image required');
@@ -20,6 +21,9 @@ async function fixture(root,{large=false,mode='safe',purpose='checks'}={}){
 const fs=require('fs'),assert=require('assert/strict'),{createHash}=require('crypto');
 assert.equal(createHash('sha256').update(fs.readFileSync('public/고려 지도.bin')).digest('hex'),${JSON.stringify(hash)});
 assert.equal(fs.statSync('tool.sh').mode&0o111,0o111);assert.equal(process.getuid(),1000);
+fs.copyFileSync('/bin/true','./native-tool');fs.chmodSync('./native-tool',0o700);
+assert.equal(require('child_process').spawnSync('./native-tool').status,0);
+
 for(const key of ['GH_TOKEN','GITHUB_TOKEN','CLAUDE_CODE_OAUTH_TOKEN','PRIVATE_GAME_WRITE_TOKEN','OPENAI_API_KEY','NODE_OPTIONS'])assert.equal(process.env[key],undefined);
 for(const path of ['/var/run/docker.sock','/root/.config/gh/hosts.yml','/work/project/previous-stage'])assert.equal(fs.existsSync(path),false);
 assert.throws(()=>fs.writeFileSync('/input/manifest.json','BAD'));assert.throws(()=>fs.writeFileSync('/root/stolen','BAD'));
@@ -40,8 +44,9 @@ test('large Unicode/executable disk baseline reaches three fresh real offline np
   process.env.PRIVATE_GAME_WRITE_TOKEN='SYNTHETIC_HOST_SECRET';
   try{
     const r=await fixture(root,{large:true});
+    const offlineDependencies=await prepareOfflineNpmDependencies({diskSnapshot:r.snapshot,tarballRoot:join(root,'packages')});
     for(const stage of ['typecheck','unit-test','build']){
-      const report=await checker.runDiskBaselineStage({diskSnapshot:r.snapshot,imageId,stage,timeoutMs:60000});
+      const report=await checker.runDiskBaselineStage({diskSnapshot:r.snapshot,imageId,stage,timeoutMs:60000,offlineDependencies});
       assert.equal(report.status,'passed');assert.equal(report.removed,true);assert.equal(report.publishAuthorized,false);assert.equal(report.variant,'baseline');assert.equal(report.baseSha,r.snapshot.baseSha);assert.equal(report.manifestSha256,r.snapshot.manifestSha256);assert.equal(report.baselineBinding,'github-main-pinned');
     }
     await noResources();
@@ -52,8 +57,17 @@ test('real offline dependency miss, timeout and output exhaustion fail and remov
   for(const mode of ['offline','timeout','output']){
     const root=await mkdtemp(join(tmpdir(),'disk-check-fail-'));
     try{
-      const r=await fixture(root,{mode}),report=await checker.runDiskBaselineStage({diskSnapshot:r.snapshot,imageId,stage:'build',timeoutMs:mode==='timeout'?2000:30000,outputLimit:mode==='output'?1024:240000});
-      assert.equal(report.status,'failed');assert.equal(report.failureKind,mode==='offline'?'check_failed':mode==='timeout'?'timeout':'output_limit');assert.equal(report.publishAuthorized,false);assert.ok(!JSON.stringify(report).includes('PRIVATE_OUTPUT'));await noResources();
+      const r=await fixture(root,{mode}),report=await checker.runDiskBaselineStage({diskSnapshot:r.snapshot,imageId,stage:'build',timeoutMs:mode==='timeout'?2000:30000,outputLimit:mode==='output'?1024:240000,diagnosticsRoot:join(root,'diagnostics')});
+      assert.equal(report.status,'failed');assert.equal(report.failureKind,mode==='offline'?'check_failed':mode==='timeout'?'timeout':'output_limit');assert.equal(report.publishAuthorized,false);assert.ok(!JSON.stringify(report).includes('PRIVATE_OUTPUT'));
+      const log=join(root,'diagnostics',report.diagnosticId);
+      const bytes=await readFile(log);
+      assert.equal((await stat(log)).mode&0o777,0o600);
+      if(mode==='offline')assert.match(bytes.toString(),/ENOTCACHED/);
+      if(mode==='output'){
+        assert.equal(bytes.length,1024);
+        assert.match(bytes.toString(),/PRIVATE_OUTPUT/);
+      }
+      await noResources();
     }finally{await rm(root,{recursive:true,force:true});}
   }
 });
