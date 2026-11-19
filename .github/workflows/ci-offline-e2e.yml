@@ -36,6 +36,7 @@ on:
       - scripts/disk-check-input*
       - scripts/disk-execution-policy.test.mjs
       - scripts/offline-npm-runtime*
+      - scripts/offline-npm-download*
       - scripts/large-disk-validation*
       - scripts/gh-blob-stream*
       - scripts/main-inventory.mjs

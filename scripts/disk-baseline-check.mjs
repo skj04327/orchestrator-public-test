@@ -1,5 +1,9 @@
 // Trusted-host disk baseline/candidate stage. This observation never grants publication.
 import {randomUUID} from 'node:crypto';
+import {join} from 'node:path';
+import {constants} from 'node:fs';
+import {open,rm} from 'node:fs/promises';
+import {ensurePrivateStateRoot} from './private-queue.mjs';
 import {docker,failure,parseExitedDockerState} from './docker-command.mjs';
 import {makeTarFile} from './container-tar.mjs';
 import {createDiskBaselineArchive} from './disk-baseline.mjs';
@@ -50,21 +54,45 @@ function configuration({imageId,stage,timeoutMs,outputLimit,signal}){
   if(process.env.GITHUB_ACTIONS==='true'||!Object.hasOwn(stages,stage))throw failure('invalid_configuration');
   captureCheckConfiguration({imageId,timeoutMs,outputLimit});if(signal?.aborted)throw failure('cancelled');
 }
-export async function runDiskBaselineStage({diskSnapshot,offlineDependencies,imageId,stage,timeoutMs=420000,outputLimit=240000,signal}){
+export async function runDiskBaselineStage({diskSnapshot,offlineDependencies,imageId,stage,timeoutMs=420000,outputLimit=240000,signal,diagnosticsRoot}){
   const config={imageId,stage,timeoutMs,outputLimit,signal};configuration(config);
   const archive=createDiskBaselineArchive(diskSnapshot,{signal});
   const dependencyArchive=createOfflineNpmArchive(offlineDependencies,diskSnapshot,{signal});
-  return runPreparedDiskStage({...config,variant:'baseline',archive:{...archive,dependencyArchive}});
+  let privateDiagnostics;
+  if(diagnosticsRoot!==undefined){
+    try{privateDiagnostics=await ensurePrivateStateRoot(diagnosticsRoot);}
+    catch{throw failure('diagnostics_unavailable');}
+  }
+  return runPreparedDiskStage({...config,variant:'baseline',archive:{...archive,dependencyArchive},privateDiagnostics});
 }
 export async function runDiskCheckStage({checkInput,variant,stage,offlineDependencies,imageId,timeoutMs=420000,outputLimit=240000,signal}){
   const config={imageId,stage,timeoutMs,outputLimit,signal};configuration(config);
   return runPreparedDiskStage({...config,variant,archive:createDiskCheckArchive(checkInput,{variant,offlineDependencies,signal})});
 }
-async function runPreparedDiskStage({archive,variant,imageId,stage,timeoutMs,outputLimit,signal}){
+async function saveDiagnostics(path,bytes,signal){
+  let created=false;
+  try{
+    const file=await open(path,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
+    created=true;
+    try{await file.writeFile(bytes);await file.sync();}
+    finally{await file.close();}
+    if(signal?.aborted)throw failure('cancelled');
+  }catch(error){
+    if(created){
+      try{await rm(path,{force:true});}
+      catch{throw failure('diagnostics_write_failed');}
+    }
+    throw failure(error.failureKind==='cancelled'?'cancelled':'diagnostics_write_failed');
+  }
+}
+async function runPreparedDiskStage({archive,variant,imageId,stage,timeoutMs,outputLimit,signal,privateDiagnostics}){
   const {inputStream,overlayArchive,dependencyArchive,provenance,proof}=archive;
+  const workFlags=dependencyArchive?'rw,exec':'rw';
   const name='orch-disk-check-'+randomUUID(),seed=name+'-seed',volume=name+'-input',began=Date.now();
   const label='orchestrator.disk-baseline-check=true';let volumeCreated=false,seedCreated=false,created=false,status='failed',failureKind=null,exitCode=null;
   const request=(args,opts={})=>docker(args,{...opts,signal});
+  let diagnosticOutput,diagnosticId;
+  const captureOutput=privateDiagnostics?bytes=>{diagnosticOutput=bytes;}:undefined;
   try{
     volumeCreated=true;await request(['volume','create','--label',label,volume]);
     seedCreated=true;await request(['create','--name',seed,'--label',label,'--pull=never','--read-only','--network','none',
@@ -78,10 +106,10 @@ async function runPreparedDiskStage({archive,variant,imageId,stage,timeoutMs,out
     created=true;await request(['create','--name',name,'--label',label,'--pull=never','--read-only','--network','none',
       '--user','1000:1000','--workdir','/work','--ipc','private','--cap-drop','ALL','--security-opt','no-new-privileges','--log-driver','none',
       '--pids-limit','128','--memory','3g','--memory-swap','3g','--cpus','2',
-      '--tmpfs','/work:rw,nosuid,nodev,size=2g,uid=1000,gid=1000,mode=0700','--tmpfs','/tmp:rw,nosuid,nodev,size=128m',
+      '--tmpfs','/work:'+workFlags+',nosuid,nodev,size=2g,uid=1000,gid=1000,mode=0700','--tmpfs','/tmp:rw,nosuid,nodev,size=128m',
       '--mount','type=volume,source='+volume+',target=/input,readonly',imageId,'node','/input/disk-check-entry.cjs',stage,variant,dependencyArchive?'with-dependencies':'without-dependencies']);
     let startFailure=null;
-    try{await request(['start','--attach',name],{timeout:timeoutMs,limit:outputLimit});}
+    try{await request(['start','--attach',name],{timeout:timeoutMs,limit:outputLimit,captureOutput});}
     catch(error){if(error.failureKind!=='docker_error')throw error;startFailure=error;}
     const state=parseExitedDockerState(JSON.parse((await request(['inspect','--format','{{json .State}}',name])).toString()));
     exitCode=state.ExitCode;
@@ -97,5 +125,9 @@ async function runPreparedDiskStage({archive,variant,imageId,stage,timeoutMs,out
     if(failed)throw failure('cleanup_failed');
   }
   if(signal?.aborted)throw failure('cancelled');
-  return {kind:'disk-baseline-stage-v1',variant,stage,status,failureKind,exitCode,removed:true,durationMs:Date.now()-began,...provenance,...(proof?{candidateContentSha256:proof.candidateContentSha256}:{}),publishAuthorized:false};
+  if(diagnosticOutput){
+    diagnosticId=name+'.log';
+    await saveDiagnostics(join(privateDiagnostics,diagnosticId),diagnosticOutput,signal);
+  }
+  return {kind:'disk-baseline-stage-v1',variant,stage,status,failureKind,exitCode,removed:true,durationMs:Date.now()-began,...provenance,...(diagnosticId?{diagnosticId}:{}),...(proof?{candidateContentSha256:proof.candidateContentSha256}:{}),publishAuthorized:false};
 }
