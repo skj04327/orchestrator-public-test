@@ -9,7 +9,7 @@ import {gitBaselineFixture} from './test-fixtures/git-baseline.mjs';
 const actions=process.env.GITHUB_ACTIONS;
 before(()=>{delete process.env.GITHUB_ACTIONS;});after(()=>{if(actions===undefined)delete process.env.GITHUB_ACTIONS;else process.env.GITHUB_ACTIONS=actions;});
 test('disk stage ambiguous create, corrupt source and cleanup failure never report pass; denial creates no resources',async()=>{
-  for(const mode of ['create-fails','tamper','cleanup-fails','data-only','forged','actions','never-started','malformed-state']){
+  for(const mode of ['create-fails','tamper','cleanup-fails','data-only','forged','actions','never-started','malformed-state','extended-unit-test']){
     const root=await mkdtemp(join(tmpdir(),'disk-stage-lifecycle-')),oldPath=process.env.PATH,log=join(root,'calls');
     try{
       const f=await gitBaselineFixture({files:[{path:'package.json',content:'e30='},{path:'package-lock.json',content:'e30='}]});
@@ -26,7 +26,13 @@ if(a[0]==='cp'){process.stdin.resume();process.stdin.on('end',()=>process.exit(0
 `);await chmod(join(root,'docker'),0o755);process.env.PATH=root+':'+oldPath;
       if(mode==='actions')process.env.GITHUB_ACTIONS='true';
       const operation=()=>runDiskBaselineStage({diskSnapshot:mode==='forged'?structuredClone(r.snapshot):r.snapshot,imageId:'sha256:'+'a'.repeat(64),stage:'build'});
-      if(['cleanup-fails','data-only','forged','actions'].includes(mode))await assert.rejects(operation());
+      if(mode==='extended-unit-test'){
+        const opts={diskSnapshot:r.snapshot,imageId:'sha256:'+'a'.repeat(64),stage:'unit-test',timeoutMs:900000};
+        await assert.rejects(runDiskBaselineStage({...opts,timeoutMs:900001}),{failureKind:'invalid_configuration'});
+        await assert.rejects(runDiskBaselineStage({...opts,stage:'build'}),{failureKind:'invalid_configuration'});
+        assert.equal((await runDiskBaselineStage(opts)).status,'passed');
+      }
+      else if(['cleanup-fails','data-only','forged','actions'].includes(mode))await assert.rejects(operation());
       else{const result=await operation();assert.equal(result.status,'failed');assert.equal(result.publishAuthorized,false);if(mode==='tamper')assert.equal(result.failureKind,'blob_integrity');}
       const calls=(await readFile(log,'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
       if(['data-only','forged','actions'].includes(mode))assert.equal(calls.length,0);

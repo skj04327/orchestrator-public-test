@@ -50,12 +50,17 @@ function run(args,cwd='/work/project'){return new Promise((resolve,reject)=>{
   if(!await run(stages[process.argv[2]]))process.exitCode=1;
 })().catch(()=>{process.exitCode=1;});
 `);
-function configuration({imageId,stage,timeoutMs,outputLimit,signal}){
-  if(process.env.GITHUB_ACTIONS==='true'||!Object.hasOwn(stages,stage))throw failure('invalid_configuration');
-  captureCheckConfiguration({imageId,timeoutMs,outputLimit});if(signal?.aborted)throw failure('cancelled');
+const DEFAULT_TIMEOUT=420000;
+const BASELINE_TEST_TIMEOUT=900000;
+function configuration({imageId,stage,timeoutMs,outputLimit,signal},baseline=false){
+  const cap=baseline&&stage==='unit-test'?BASELINE_TEST_TIMEOUT:DEFAULT_TIMEOUT;
+  if(process.env.GITHUB_ACTIONS==='true'||!Object.hasOwn(stages,stage)||
+    !Number.isSafeInteger(timeoutMs)||timeoutMs>cap)throw failure('invalid_configuration');
+  captureCheckConfiguration({imageId,timeoutMs:Math.min(timeoutMs,DEFAULT_TIMEOUT),outputLimit});
+  if(signal?.aborted)throw failure('cancelled');
 }
-export async function runDiskBaselineStage({diskSnapshot,offlineDependencies,imageId,stage,timeoutMs=420000,outputLimit=240000,signal,diagnosticsRoot}){
-  const config={imageId,stage,timeoutMs,outputLimit,signal};configuration(config);
+export async function runDiskBaselineStage({diskSnapshot,offlineDependencies,imageId,stage,timeoutMs=DEFAULT_TIMEOUT,outputLimit=240000,signal,diagnosticsRoot}){
+  const config={imageId,stage,timeoutMs,outputLimit,signal};configuration(config,true);
   const archive=createDiskBaselineArchive(diskSnapshot,{signal});
   const dependencyArchive=createOfflineNpmArchive(offlineDependencies,diskSnapshot,{signal});
   let privateDiagnostics;
@@ -65,7 +70,7 @@ export async function runDiskBaselineStage({diskSnapshot,offlineDependencies,ima
   }
   return runPreparedDiskStage({...config,variant:'baseline',archive:{...archive,dependencyArchive},privateDiagnostics});
 }
-export async function runDiskCheckStage({checkInput,variant,stage,offlineDependencies,imageId,timeoutMs=420000,outputLimit=240000,signal}){
+export async function runDiskCheckStage({checkInput,variant,stage,offlineDependencies,imageId,timeoutMs=DEFAULT_TIMEOUT,outputLimit=240000,signal}){
   const config={imageId,stage,timeoutMs,outputLimit,signal};configuration(config);
   return runPreparedDiskStage({...config,variant,archive:createDiskCheckArchive(checkInput,{variant,offlineDependencies,signal})});
 }
@@ -98,8 +103,8 @@ async function runPreparedDiskStage({archive,variant,imageId,stage,timeoutMs,out
     seedCreated=true;await request(['create','--name',seed,'--label',label,'--pull=never','--read-only','--network','none',
       '--cap-drop','ALL','--security-opt','no-new-privileges','--pids-limit','32','--memory','128m','--memory-swap','128m','--cpus','1',
       '--mount','type=volume,source='+volume+',target=/input',imageId,'node','-e','process.exit(0)']);
-    await request(['cp','-',seed+':/input/'],{inputStream,timeout:timeoutMs});
-    if(dependencyArchive)await request(['cp','-',seed+':/input/'],{inputStream:dependencyArchive,timeout:timeoutMs});
+    await request(['cp','-',seed+':/input/'],{inputStream,timeout:Math.min(timeoutMs,DEFAULT_TIMEOUT)});
+    if(dependencyArchive)await request(['cp','-',seed+':/input/'],{inputStream:dependencyArchive,timeout:Math.min(timeoutMs,DEFAULT_TIMEOUT)});
     if(overlayArchive)await request(['cp','-',seed+':/input/'],{input:overlayArchive});
     await request(['cp','-',seed+':/input/'],{input:makeTarFile('disk-check-entry.cjs',entry)});
     await request(['rm','--force',seed]);seedCreated=false;
