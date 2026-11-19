@@ -9,6 +9,11 @@ import { shouldAttemptRepair } from './retry-policy.mjs';
 import { plannerContract, parseWorkplan, assertExecutableWorkplan, makeCodePrompt } from './workpack-planner.mjs';
 import { loadPublicReferences, findTaskImage, describeTaskImage, buildReferenceContext } from './reference-gateway.mjs';
 import { createReadonlyMcpSession } from './reference-mcp-config.mjs';
+// This legacy runner combines agent calls and game scripts in the same process boundary.
+if(process.env.ORCHESTRATOR_WORKER_HAS_AUTH==='1'||process.env.CLAUDE_CODE_OAUTH_TOKEN){
+  console.error('RESULT: AUTHENTICATED_WORKER_REQUIRES_SEPARATE_CHECKS');
+  process.exit(1);
+}
 const cwd=join(process.cwd(),'private-game');
 const id=process.env.TASK_ID;
 if (!/^[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9]+$/.test(id||'')) throw Error('Invalid task ID');

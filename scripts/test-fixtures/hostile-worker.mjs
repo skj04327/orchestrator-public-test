@@ -9,6 +9,7 @@ const id=process.env.TASK_ID;
 if(mode==='symlink'){await symlink('/input/auth.json','/work/.private-task-result.json');process.exit(0);}
 if(mode==='directory'){await mkdir('/work/.private-task-result.json');process.exit(0);}
 const denied=async operation=>{try{await operation();return false;}catch{return true;}};
+const auth=JSON.parse(await readFile('/input/auth.json','utf8'));
 const checks=[
   await denied(()=>writeFile('/opt/control/seal-private-task.mjs','PLAINTEXT_UPLOAD')),
   await denied(()=>writeFile('/opt/control/.private-handoff.enc','PLAINTEXT_UPLOAD')),
@@ -19,6 +20,7 @@ const checks=[
   await denied(()=>access('/proc/1/root/workspace/orchestrator')),
   ['PRIVATE_GAME_WRITE_TOKEN','GITHUB_OUTPUT','GITHUB_ENV','GITHUB_PATH','ACTIONS_RUNTIME_TOKEN',
     'ACTIONS_RUNTIME_URL','GITHUB_TOKEN','HANDOFF_PUBLIC_KEY','NODE_OPTIONS','RUNNER_TEMP'].every(k=>!(k in process.env)),
+  process.env.ORCHESTRATOR_WORKER_HAS_AUTH===(Object.values(auth).some(Boolean)?'1':'0'),
   process.getuid()!==0,
   /NoNewPrivs:\s+1/.test(await readFile('/proc/self/status','utf8')),
   /CapEff:\s+0+\n/.test(await readFile('/proc/self/status','utf8'))

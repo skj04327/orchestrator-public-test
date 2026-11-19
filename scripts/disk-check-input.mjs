@@ -1,8 +1,7 @@
 // Trusted-host opaque overlay. Candidate bytes are bounded separately from disk assets.
 import {createHash} from 'node:crypto';
 import {diskExecutionMetadata,createDiskBaselineArchive,isSafeDiskExecutionPath,validateDiskProjection} from './disk-baseline.mjs';
-import {validateBundle} from './private-task-bundle.mjs';
-import {handoffContext} from './private-handoff.mjs';
+import {validateLocalCheckBundle} from './local-candidate-bundle.mjs';
 import {assertCandidateOverlayPaths} from './independent-check-input.mjs';
 import {digestFileBuffers} from './verified-manifest.mjs';
 import {makeTarHeader} from './container-tar.mjs';
@@ -20,9 +19,8 @@ export function validateDiskCheckProvenance(p,claim){
     (projected&&(!validateDiskProjection(p.projection)||p.fileCount+p.projection.excludedFileCount>10000)))throw Error('Invalid disk provenance');
 }
 export function captureDiskCheckInput({diskSnapshot,context,bundle}){
-  if(context?.kind!=='local')throw Error('Local check context required');handoffContext(context);
-  const {files:baseline,provenance}=diskExecutionMetadata(diskSnapshot),verified=validateBundle(bundle,context);
-  if(!verified.result||verified.baseSha!==provenance.baseSha)throw Error('Wrong disk baseline');
+  const {files:baseline,provenance}=diskExecutionMetadata(diskSnapshot),verified=validateLocalCheckBundle(bundle,context);
+  if(!verified.files.length||verified.baseSha!==provenance.baseSha)throw Error('Wrong disk baseline');
   const candidate=verified.files.map(f=>({path:f.path,content:Buffer.from(f.content)}));
   if(candidate.some(f=>!isSafeDiskExecutionPath(f.path)))throw Error('Unsafe disk candidate path');
   assertCandidateOverlayPaths(baseline.map(f=>f.path),candidate.map(f=>f.path));
