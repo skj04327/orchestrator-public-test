@@ -91,18 +91,37 @@ async function readPrivate(path,limit){
     if(n>limit)throw fail('unsafe_cache');return b.subarray(0,n);
   }finally{await f.close();}
 }
-async function verifyBlob(path,entry,{collect=false,check=()=>{}}={}){
+async function verifyBlob(path,entry,{collect=false,check=()=>{},copyTo}={}){
   check();const f=await open(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK),chunks=[];
   try{
     const s=await f.stat();if(!s.isFile()||s.uid!==process.getuid()||(s.mode&0o077)||s.nlink!==1||s.size!==entry.size)throw fail('unsafe_cache_blob');
     if(collect&&entry.size>1048576)throw fail('memory_capacity');
     const h1=createHash('sha1').update('blob '+entry.size+'\0'),h256=createHash('sha256'),b=Buffer.alloc(65536);let n=0;
     while(true){check();const {bytesRead}=await f.read(b,0,b.length,n);if(!bytesRead)break;n+=bytesRead;if(n>entry.size)throw fail('blob_integrity');
-      const part=b.subarray(0,bytesRead);h1.update(part);h256.update(part);if(collect)chunks.push(Buffer.from(part));}
+      const part=b.subarray(0,bytesRead);h1.update(part);h256.update(part);if(collect)chunks.push(Buffer.from(part));
+      if(copyTo){
+        let offset=0;
+        while(offset<bytesRead){
+          check();
+          const {bytesWritten}=await copyTo.write(part,offset,bytesRead-offset);
+          if(!bytesWritten)throw fail('disk_write_failed');
+          offset+=bytesWritten;
+        }
+      }
+    }
     const hash=h256.digest('hex');check();
     if(n!==entry.size||h1.digest('hex')!==entry.sha||(entry.sha256&&hash!==entry.sha256))throw fail('blob_integrity');
     return {sha256:hash,...(collect?{content:Buffer.concat(chunks,n).toString('base64')}:{})};
   }finally{await f.close();}
+}
+async function copyCacheBlob(source,entry,destination,check){
+  check();
+  const target=await open(destination,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
+  try{
+    await verifyBlob(join(source,entry.sha),entry,{check,copyTo:target});
+    await target.sync();
+    check();
+  }finally{await target.close();}
 }
 function validateIndex(value,baseSha){
   const projected=value?.purpose===PROJECTED;
@@ -149,9 +168,11 @@ async function reopenDiskBaseline({root,baseSha,signal,expectedPurpose}){
   }
   if(signal?.aborted)throw fail('cancelled');return handle(directory,index);
 }
-export async function collectDiskBaseline({root,get,streamBlob=fetchGitBlobToFile,expectedBaseSha,signal,timeoutMs=1800000,onProgress,purpose='checks',projectionSha256}){
+export async function collectDiskBaseline({root,get,streamBlob=fetchGitBlobToFile,expectedBaseSha,signal,timeoutMs=1800000,onProgress,purpose='checks',projectionSha256,reuseSnapshot}){
   if(process.env.GITHUB_ACTIONS==='true'||!['checks','data-only',PROJECTED].includes(purpose)||
     (purpose===PROJECTED?!digest(projectionSha256):projectionSha256!==undefined)||typeof streamBlob!=='function'||expectedBaseSha!==undefined&&!sha(expectedBaseSha))throw fail('invalid_configuration');
+  const prior=handles.get(reuseSnapshot);
+  if(reuseSnapshot!==undefined&&(!prior||purpose==='data-only'||prior.index.purpose!==purpose))throw fail('invalid_configuration');
   const directory=await ensurePrivateStateRoot(root),session=privateReadSession({get,signal,timeoutMs,requestLimit:4000});
   const {request,checkStopped}=session;let stage=null,committed=false,baseSha;
   try{
@@ -184,11 +205,22 @@ export async function collectDiskBaseline({root,get,streamBlob=fetchGitBlobToFil
     stage=await mkdtemp(join(directory,'.disk-'));
     await writePrivateStateFile(join(directory,baseSha+'.claim'),Buffer.from(JSON.stringify({schemaVersion:1,baseSha,bundleDirectory:basename(stage)})+'\n'));
     const blobs=join(stage,'blobs');await mkdir(blobs,{mode:0o700});
-    const objects=[...unique.values()],verified=new Map();let cursor=0,received=0,error=null;
+    const objects=[...unique.values()],verified=new Map();
+    const reusable=prior?uniqueBlobs(prior.index.files):new Map();
+    const source=prior?await ensurePrivateStateRoot(join(prior.root,prior.index.bundleDirectory,'blobs')):null;
+    let cursor=0,received=0,reusedBlobs=0,error=null;
     async function worker(){
       try{while(true){checkStopped();const i=cursor++;if(i>=objects.length)return;const e=objects[i],destination=join(blobs,e.sha);
-        await streamBlob({sha:e.sha,size:e.size,destination,signal:session.signal,timeoutMs:180000});checkStopped();
-        const checked=await verifyBlob(destination,e,{check:checkStopped});verified.set(e.sha,checked.sha256);received+=e.size;
+        const previous=reusable.get(e.sha);
+        if(previous){
+          if(previous.size!==e.size)throw fail('invalid_blob_size');
+          await copyCacheBlob(source,previous,destination,checkStopped);
+          reusedBlobs++;
+        }else{
+          await streamBlob({sha:e.sha,size:e.size,destination,signal:session.signal,timeoutMs:180000});
+        }
+        checkStopped();
+        const checked=await verifyBlob(destination,previous??e,{check:checkStopped});verified.set(e.sha,checked.sha256);received+=e.size;
         onProgress?.({completedBlobs:verified.size,totalBlobs:objects.length,receivedBytes:received,totalBytes:bytes});
       }}catch(e){if(!error)error=e;session.abort('capture_failed');throw e;}
     }
@@ -201,7 +233,7 @@ export async function collectDiskBaseline({root,get,streamBlob=fetchGitBlobToFil
     validateIndex(index,baseSha);const encoded=Buffer.from(JSON.stringify(index)+'\n');if(encoded.length>MAX_INDEX)throw fail('index_capacity');
     await writePrivateStateFile(join(stage,'index.json'),encoded);checkStopped();
     await link(join(stage,'index.json'),join(directory,baseSha+'.json'));committed=true;
-    return {phase:capturePhase(purpose),...summary,snapshot:handle(directory,index)};
+    return {phase:capturePhase(purpose),...summary,...(prior?{reusedBlobs}:{}),snapshot:handle(directory,index)};
   }finally{session.dispose();if(stage&&!committed)await rm(stage,{recursive:true,force:true});}
 }
 export function getMaterializedDiskProof(baseline){return materialized.get(baseline)??null;}
