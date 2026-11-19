@@ -129,3 +129,40 @@ test('fresh main/tree mismatch or final main movement prevents reuse or index co
     }finally{await rm(root,{recursive:true,force:true});}
   }
 });
+
+test('a new main capture reuses only same-purpose verified blobs and still fetches new content',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'disk-reuse-'));
+  try{
+    const first=await fixture([file('public/a.bin','FIRST')]);
+    const old=await collectDiskBaseline({root:join(root,'old'),get:first.get,streamBlob:first.streamBlob});
+    const changed=await fixture([file('public/a.bin','SECOND')]);
+    const result=await collectDiskBaseline({root:join(root,'new'),get:changed.get,streamBlob:changed.streamBlob,reuseSnapshot:old.snapshot});
+    assert.equal(result.phase,'captured-disk');
+    assert.equal(result.snapshot.baseSha,changed.baseSha);
+    assert.equal(result.reusedBlobs,2);
+    assert.equal(changed.transfers.length,1);
+    const reopened=await openDiskBaseline({root:join(root,'new'),baseSha:changed.baseSha});
+    assert.ok((await materializeDiskBaseline(reopened)).baseline.files.some(f=>f.content===Buffer.from('SECOND').toString('base64')));
+    const archive=await collectDiskBaseline({root:join(root,'archive'),get:first.get,streamBlob:first.streamBlob,purpose:'data-only'});
+    for(const reuseSnapshot of [archive.snapshot,structuredClone(old.snapshot)]){
+      await assert.rejects(collectDiskBaseline({root:join(root,'denied'),get:changed.get,streamBlob:changed.streamBlob,reuseSnapshot}),{failureKind:'invalid_configuration'});
+    }
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('reuse rehashes the source descriptor and a modified cache is never committed or repaired silently',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'disk-reuse-tamper-'));
+  try{
+    const first=await fixture([file('public/a.bin','FIRST')]);
+    const oldRoot=join(root,'old');
+    const old=await collectDiskBaseline({root:oldRoot,get:first.get,streamBlob:first.streamBlob});
+    const index=JSON.parse(await readFile(join(oldRoot,first.baseSha+'.json'),'utf8'));
+    const kept=index.files.find(f=>f.path==='src/a.ts');
+    await writeFile(join(oldRoot,index.bundleDirectory,'blobs',kept.sha),Buffer.alloc(kept.size,7));
+    const next=await fixture([file('public/a.bin','SECOND')]);
+    const newRoot=join(root,'new');
+    await assert.rejects(collectDiskBaseline({root:newRoot,get:next.get,streamBlob:next.streamBlob,reuseSnapshot:old.snapshot}),{failureKind:'blob_integrity'});
+    assert.ok(!next.transfers.includes(kept.sha));
+    await assert.rejects(stat(join(newRoot,next.baseSha+'.json')),{code:'ENOENT'});
+  }finally{await rm(root,{recursive:true,force:true});}
+});
