@@ -20,7 +20,8 @@ export function validateDiskCheckProvenance(p,claim){
 }
 export function captureDiskCheckInput({diskSnapshot,context,bundle}){
   const {files:baseline,provenance}=diskExecutionMetadata(diskSnapshot),verified=validateLocalCheckBundle(bundle,context);
-  if(!verified.files.length||verified.baseSha!==provenance.baseSha)throw Error('Wrong disk baseline');
+  if(!verified.files.length||verified.baseSha!==provenance.baseSha||
+    (verified.baselineManifestSha256!==undefined&&verified.baselineManifestSha256!==provenance.manifestSha256))throw Error('Wrong disk baseline');
   const candidate=verified.files.map(f=>({path:f.path,content:Buffer.from(f.content)}));
   if(candidate.some(f=>!isSafeDiskExecutionPath(f.path)))throw Error('Unsafe disk candidate path');
   assertCandidateOverlayPaths(baseline.map(f=>f.path),candidate.map(f=>f.path));

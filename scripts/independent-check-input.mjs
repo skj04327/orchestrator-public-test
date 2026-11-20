@@ -59,6 +59,7 @@ function digest(files){
 export function baselineContentDigest(value){return digest(files(value));}
 export function captureCheckSnapshot({context,bundle,baseline}){
   const verified=validateLocalCheckBundle(bundle,context);
+  if(verified.baselineManifestSha256!==undefined)throw Error('Disk-bound candidate requires direct disk checks');
   if(!verified.files.length||!exact(baseline,['baseSha','files'])||baseline.baseSha!==verified.baseSha)throw Error('Wrong baseline commit');
   const snapshot=normalize({baseline:baseline.files,candidate:verified.files.map(f=>({path:f.path,content:f.content.toString('base64')}))});
   const payload=Buffer.from(JSON.stringify(snapshot));if(payload.length>MAX_CHECK_PAYLOAD)throw Error('Oversized check payload');

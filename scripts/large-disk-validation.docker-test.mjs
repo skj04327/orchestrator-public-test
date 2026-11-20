@@ -8,7 +8,7 @@ import {createHash} from 'node:crypto';
 import {makeLocalReceipt} from './test-fixtures/local-receipt.mjs';
 import {prepareLocalJob,runPreparedLocalJob,readLocalJob} from './local-jobs.mjs';
 import {recipientKey,seal} from './private-handoff.mjs';
-import {sealLocalCandidate} from './local-candidate-bundle.mjs';
+import {submitLocalCandidate} from './local-candidate-intake.mjs';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import * as stageRunner from './disk-baseline-check.mjs';
@@ -101,14 +101,19 @@ async function localFixture(root,options={}){
     if(projected)baseline.files.push(encoded('.codex/config.toml','SYNTHETIC_EXCLUDED_CONFIG'));
   },...projectOptions});
   const key=recipientKey('SYNTHETIC_LOCAL_KEY',job.context);
-  await runPreparedLocalJob({...f,publicKey:key.publicKey,worker:async({context,publicKey})=>({removed:true,executionOutcome:'success',
-    encrypted:candidateOnly?sealLocalCandidate({context,publicKey,baseSha:source.snapshot.baseSha,
-      files:source.bundle.files.map(({path,content})=>({path,content:Buffer.from(content,'base64')}))}):seal(source.bundle,publicKey,context)})});
+  if(candidateOnly){
+    const response=Buffer.from(JSON.stringify({schemaVersion:1,runId:job.context.runId,baselineManifestSha256:source.snapshot.manifestSha256,
+      files:source.bundle.files.map(({path,content})=>({path,content:Buffer.from(content,'base64').toString('utf8')}))}));
+    await submitLocalCandidate({...f,diskSnapshot:source.snapshot,publicKey:key.publicKey,response});
+  }else{
+    await runPreparedLocalJob({...f,publicKey:key.publicKey,worker:async({context,publicKey})=>({removed:true,
+      executionOutcome:'success',encrypted:seal(source.bundle,publicKey,context)})});
+  }
   const offlineDependencies=packages?await prepareOfflineNpmDependencies({diskSnapshot:source.snapshot,tarballRoot:packages.tarballRoot}):undefined;
   return {...f,context:job.context,diskSnapshot:source.snapshot,privateKey:key.privateKey,offlineDependencies};
 }
 async function noResources(){for(const a of [['ps','-a','--filter','label=orchestrator.disk-baseline-check=true','--format','{{.Names}}'],['volume','ls','--filter','label=orchestrator.disk-baseline-check=true','--format','{{.Name}}']])assert.equal((await promisify(execFile)('docker',a,{env:{PATH:process.env.PATH}})).stdout.trim(),'');}
-test('six projected disk checks accept candidate-only handoff and install locked dependencies without credentials',async()=>{
+test('six projected disk checks accept a bound local reply and install locked dependencies without credentials',async()=>{
   const root=await mkdtemp(join(tmpdir(),'disk-six-real-'));
   try{
     const f=await localFixture(root,{withDependencies:true,projected:true,candidateOnly:true}),options={...f,imageId,timeoutMs:30000};

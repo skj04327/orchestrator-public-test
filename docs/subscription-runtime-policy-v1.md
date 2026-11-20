@@ -48,6 +48,8 @@ node --test scripts/*.test.mjs
 
 CI는 익명 배포물 수백 MB를 매번 다운로드하지 않고 정책/진단 계약 검사와 기존 합성 Docker 공격 회귀만 실행한다. version/help 관측을 CI에서 다시 실행했다고 혼동하지 않는다.
 
+2026-11-19 개발 호스트의 설치된 `codex-cli 0.167.0-alpha.4`에서 `codex exec --help`로 표준 입력 안내, `--output-schema`, `--output-last-message`, `--sandbox` 옵션의 표시 여부를 확인했다. 이 관찰은 실제 스키마 적용, 사용자 구독 인증, 비공개 자료 전송, Termux 설치 검증을 포함하지 않는다.
+
 ## 검증 및 다음 우선순위
 
 일반 검사 **69/69**, 기존 실제 Docker 공격 검사 **3/3**, JavaScript·셸·YAML·diff 검사가 성공했다. 실제 version/help 4종과 Claude 추가 옵션 파싱도 성공했다. 독립 리뷰의 probe 취소 시 정리 누락 지적을 반영해 취소 전파와 uncancelled 제거를 구현했고, stderr help/취소 회귀 검사도 통과했다. 실제 구독·모델·게임·Termux·GitHub artifact 게시 시험은 미실시다.

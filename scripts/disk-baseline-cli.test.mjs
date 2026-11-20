@@ -21,8 +21,10 @@ appendFileSync(${JSON.stringify(log)},path+'\\n');if(!v)process.exit(93);if(a.in
     await chmod(join(root,'gh'),0o755);const env={...process.env,PATH:root+':'+process.env.PATH,GITHUB_ACTIONS:''},cli=resolve('scripts/disk-baseline-cli.mjs'),cache=join(root,'cache');
     const capture=await exec(process.execPath,[cli,'capture',cache],{env}),r=JSON.parse(capture.stdout);
     assert.equal(r.phase,'captured-disk');assert.equal(r.baseSha,f.baseSha);assert.equal(r.publishAuthorized,false);
+    assert.match(r.baselineManifestSha256,/^[a-f0-9]{64}$/);
     assert.ok(!capture.stdout.includes('SYNTHETIC_PRIVATE_DISK_SOURCE'));assert.ok(!capture.stderr.includes('src/a.ts'));
     const status=JSON.parse((await exec(process.execPath,[cli,'status',cache,f.baseSha],{env})).stdout);
+    assert.equal(status.baselineManifestSha256,r.baselineManifestSha256);
     assert.equal(status.phase,'captured-disk');const calls=await readFile(log,'utf8');
     for(const args of [['run',cache],['capture',cache,'extra']])await assert.rejects(exec(process.execPath,[cli,...args],{env}));
     await assert.rejects(exec(process.execPath,[cli,'capture',cache],{env:{...env,GITHUB_ACTIONS:'true'}}));assert.equal(await readFile(log,'utf8'),calls);
@@ -39,7 +41,17 @@ appendFileSync(${JSON.stringify(log)},path+'\\n');if(!v)process.exit(93);if(a.in
     const latest=JSON.parse((await exec(process.execPath,[cli,'status',projectedRoot,projected.baseSha],{env})).stdout);
     assert.equal(latest.phase,'captured-projected');
     assert.equal(latest.projectionSha256,preflight.projectionSha256);
+    assert.match(result.baselineManifestSha256,/^[a-f0-9]{64}$/);
+    assert.equal(latest.baselineManifestSha256,result.baselineManifestSha256);
     assert.doesNotMatch(await readFile(log,'utf8'),new RegExp(projected.entries.find(entry=>entry.path==='.codex/config.toml').sha));
+
+    const archiveRoot=join(root,'archive');
+    const archive=JSON.parse((await exec(process.execPath,[cli,'capture-data',archiveRoot],{env})).stdout);
+    const archived=JSON.parse((await exec(process.execPath,[cli,'status',archiveRoot,projected.baseSha],{env})).stdout);
+    assert.equal(archive.phase,'captured-data-only');
+    assert.equal(archived.phase,'captured-data-only');
+    assert.equal(archive.baselineManifestSha256,undefined);
+    assert.equal(archived.baselineManifestSha256,undefined);
 
   }finally{await rm(root,{recursive:true,force:true});}
 });

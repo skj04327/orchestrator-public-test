@@ -130,6 +130,7 @@ export async function runPinnedIndependentChecks({id,stateRoot,privateKey,imageI
   if(hash(encrypted)!==state.artifactSha256)throw Error('Local artifact changed');
   const bundle=validateLocalCheckBundle(open(encrypted,privateKey,state.context),state.context);
   if(!bundle.files.length)throw Error('Local source unavailable');
+  if(bundle.baselineManifestSha256!==undefined)throw Error('Disk-bound candidate requires direct disk checks');
   const collected=await collectPrivateBaseline({get,expectedBaseSha:bundle.baseSha,signal,timeoutMs:snapshotTimeoutMs});
   if(collected.phase!=='captured')return {taskId:id,phase:collected.phase,fileCount:collected.fileCount,totalBytes:collected.totalBytes,publishAuthorized:false};
   return runLocalIndependentChecks({id,stateRoot,privateKey,...config,signal,baseline:collected.baseline});
@@ -142,6 +143,7 @@ export async function runDiskIndependentChecks({id,stateRoot,privateKey,diskSnap
   if(hash(encrypted)!==state.artifactSha256)throw Error('Local artifact changed');
   const bundle=validateLocalCheckBundle(open(encrypted,privateKey,state.context),state.context);
   if(!bundle.files.length||diskSnapshot?.baseSha!==bundle.baseSha)throw Error('Wrong disk baseline');
+  if(bundle.baselineManifestSha256!==undefined)throw Error('Disk-bound candidate requires direct disk checks');
   const ready=await materializeDiskBaseline(diskSnapshot,{signal});
   if(ready.phase!=='materialized')return {taskId:id,...ready,publishAuthorized:false};
   return runLocalIndependentChecks({id,stateRoot,privateKey,...config,signal,baseline:ready.baseline});
