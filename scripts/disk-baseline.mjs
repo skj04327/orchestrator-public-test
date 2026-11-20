@@ -9,6 +9,7 @@ import {readMainInventory,readPrivateMainHead,checkTree,BASELINE_REPOSITORY,fail
 import {privateReadSession} from './private-read-session.mjs';
 import {fetchGitBlobToFile,MAX_DISK_BLOB} from './gh-blob-stream.mjs';
 import {isSafeBaselinePath,captureBaselineInput,baselineContentDigest} from './independent-check-input.mjs';
+import {isSafeManifestPath} from './verified-manifest.mjs';
 const MAX_TOTAL=1073741824,MAX_INDEX=8388608,handles=new WeakMap(),materialized=new WeakMap();
 const sha=v=>typeof v==='string'&&/^[a-f0-9]{40}$/.test(v),digest=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
 const exact=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join(',')===[...keys].sort().join(',');
@@ -293,6 +294,35 @@ export function diskExecutionMetadata(snapshot){
 }
 
 export function isSafeDiskExecutionPath(path){return diskPath(path);}
+
+export function selectDiskDeveloperSources(snapshot,paths){
+  const {files}=diskExecutionMetadata(snapshot);
+  if(!Array.isArray(paths)||paths.length>8)throw fail('developer_source_scope');
+  const selected=[...paths];
+  if(new Set(selected).size!==selected.length||selected.some(path=>!diskPath(path)||!isSafeManifestPath(path)))throw fail('developer_source_scope');
+  const inventory=new Map(files.map(file=>[file.path,file]));
+  const entries=selected.sort().map(path=>inventory.get(path));
+  if(entries.some(entry=>!entry||entry.size>65000)||countBytes(entries)>262144)throw fail('developer_source_capacity');
+  return entries;
+}
+
+export async function readDiskDeveloperSources(snapshot,paths,{signal}={}){
+  const entries=selectDiskDeveloperSources(snapshot,paths);
+  const check=()=>{if(signal?.aborted)throw fail('cancelled');};
+  check();
+  try{
+    const {root,index}=handles.get(snapshot),blobs=await ensurePrivateStateRoot(join(root,index.bundleDirectory,'blobs'));
+    const sources=[];
+    for(const entry of entries){
+      const {content}=await verifyBlob(join(blobs,entry.sha),entry,{collect:true,check});
+      sources.push({path:entry.path,bytes:Buffer.from(content,'base64')});
+    }
+    check();
+    return sources;
+  }catch(error){
+    throw error.failureKind?error:fail('developer_source_unavailable');
+  }
+}
 
 // Read only the root npm manifests from an eligible snapshot, with the original Git integrity checks.
 export async function readDiskNpmManifests(snapshot,{signal}={}){

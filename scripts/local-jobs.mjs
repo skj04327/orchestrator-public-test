@@ -19,14 +19,22 @@ async function descriptor(dir,id){
     value.context?.kind!=='local'||value.context.taskId!==id||! /^[a-f0-9]{64}$/.test(value.manifestSha256))throw Error('Invalid local descriptor');
   handoffContext(value.context);return value;
 }
-async function snapshot(dir,job){
+async function preparedManifest(dir,job){
   const raw=await readPrivateStateFile(join(dir,'input','ready-manifest.json'),8192);
   if(hash(raw)!==job.manifestSha256)throw Error('Prepared manifest changed');
   const manifest=validateReadyManifest(json(raw),job.context.taskId);
   if(JSON.stringify(job.routing)!==JSON.stringify(manifest.routing))throw Error('Prepared routing changed');
+  return manifest;
+}
+async function readPreparedInput(dir,input){
+  const bytes=await readPrivateStateFile(join(dir,'input','task-private',input.path),limits[input.kind]);
+  if(bytes.length!==input.size||hash(bytes)!==input.sha256)throw Error('Prepared input changed');
+  return bytes;
+}
+async function snapshot(dir,job){
+  const manifest=await preparedManifest(dir,job);
   for(const input of manifest.inputs){
-    const bytes=await readPrivateStateFile(join(dir,'input','task-private',input.path),limits[input.kind]);
-    if(bytes.length!==input.size||hash(bytes)!==input.sha256)throw Error('Prepared input changed');
+    await readPreparedInput(dir,input);
   }
 }
 async function event(dir,job,sequence,phase,artifactSha256=null){
@@ -71,6 +79,24 @@ export async function readLocalJob({id,stateRoot}){
       throw Error('Local artifact integrity mismatch');
   }else if(latest.artifactSha256!==null)throw Error('Unexpected local artifact');
   return {taskId:id,phase,context:job.context,routing:job.routing,artifactSha256:latest.artifactSha256};
+}
+export async function readPreparedDeveloperTask({id,stateRoot,signal}){
+  if(process.env.GITHUB_ACTIONS==='true'||signal?.aborted)throw Error('Local developer input unavailable');
+  try{
+    const state=await readLocalJob({id,stateRoot}),dir=join(stateRoot,id);
+    if(state.phase!=='prepared')throw Error('Local job is not prepared');
+    const job=await descriptor(dir,id);
+    if(!handoffContext(job.context).equals(handoffContext(state.context)))throw Error('Prepared context changed');
+    const manifest=await preparedManifest(dir,job);
+    if(manifest.inputs.length!==1)throw Error('Attachments require a reviewed provider profile');
+    const [input]=manifest.inputs;
+    const bytes=await readPreparedInput(dir,input);
+    if(signal?.aborted)throw Error('Local developer input unavailable');
+    return {context:state.context,manifestSha256:job.manifestSha256,taskSha256:input.sha256,bytes};
+  }catch(error){
+    if(error.code||error instanceof SyntaxError)throw Error('Local developer task unavailable');
+    throw error;
+  }
 }
 export async function runPreparedLocalJob({id,stateRoot,worker,publicKey,signal}){
   if(process.env.GITHUB_ACTIONS==='true'||typeof worker!=='function'||signal?.aborted)throw Error('Local backend unavailable');
