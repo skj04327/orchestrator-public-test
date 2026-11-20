@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "observedAt": "2026-11-20",
+  "host": "Linux cloud development container (not Android/Termux, not the operator's own account)",
+  "cli": {"version": "2.1.329 (Claude Code)", "binary": "claude"},
+  "inferenceAttempted": false,
+  "modelId": null,
+  "tokenUsage": null,
+  "cost": null,
+  "officialDocuments": {
+    "retrievedWith": "plain HTTPS GET of public pages; no login",
+    "pages": [
+      "https://code.claude.com/docs/en/headless",
+      "https://code.claude.com/docs/en/cli-reference",
+      "https://code.claude.com/docs/en/authentication",
+      "https://code.claude.com/docs/en/legal-and-compliance",
+      "https://code.claude.com/docs/en/costs"
+    ],
+    "statements": {
+      "authenticationPrecedence": "Documented order: cloud provider variables, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY, apiKeyHelper, CLAUDE_CODE_OAUTH_TOKEN, profiles, then subscription OAuth from /login. In -p mode ANTHROPIC_API_KEY is always used when present.",
+      "bareMode": "--bare never reads OAuth credentials or the keychain and requires ANTHROPIC_API_KEY or apiKeyHelper, so it cannot be used with a subscription login.",
+      "structuredOutput": "--output-format json with --json-schema returns the result in a structured_output field; the field is absent when the run ends without valid structured output.",
+      "legal": "OAuth authentication is documented as intended for ordinary use by subscription purchasers; developers building products on the Agent SDK are told to use API keys. Whether this orchestrator's scripted local use is within the account owner's terms is not decided by this evidence.",
+      "extraUsage": "No page read states how to detect or disable metered extra usage from the CLI. It is an account setting this adapter cannot observe."
+    }
+  },
+  "optionsShownInHelp": {
+    "shown": ["-p/--print", "--output-format", "--json-schema", "--tools", "--safe-mode", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence", "--permission-prompts", "--setting-sources", "--model", "--max-budget-usd", "--bare", "--restricted", "--allowedTools", "--disallowedTools"],
+    "notShownButDocumented": ["--max-turns"],
+    "note": "--max-turns is documented in the CLI reference but absent from this build's --help text, as in the 2026-11-16 observation. Absence from help is not proof of lack of support."
+  },
+  "optionParsingChecks": {
+    "method": "claude -p x <flags> with a scrubbed environment (no credentials, HOME in an empty directory, ANTHROPIC_BASE_URL=http://127.0.0.1:9) so no request could leave the machine",
+    "helpFlagIsNotDiscriminating": "claude --totally-bogus-flag --help and claude --all-review-flags --help both exited 0, so a --help parse check does not prove an option exists.",
+    "discriminatingResults": {
+      "unknownOptionControl": "error: unknown option '--totally-bogus-flag' (exit 1)",
+      "--output-format bogus": "rejected as an invalid choice; allowed text, json, stream-json (exit 1)",
+      "--permission-prompts bogus": "rejected as an invalid choice; allowed host, none (exit 1)",
+      "--json-schema 'not json'": "rejected locally: --json-schema is not valid JSON (exit 1)",
+      "--safe-mode --tools '' --no-session-persistence --max-turns 1 --disable-slash-commands --strict-mcp-config --setting-sources ''": "no unknown-option error; the process proceeded to the network step and was stopped by the 20 s timeout (exit 124)"
+    },
+    "meaning": "The option parser accepts these flags. It does not show that --tools '' removes every tool, that --safe-mode ignores user settings such as apiKeyHelper, that --max-turns 3 is enough for a schema answer, or that stdin plus -p is read as the prompt."
+  },
+  "localAuthStatus": {
+    "command": "claude auth status --json",
+    "keysObserved": ["loggedIn", "authMethod", "apiProvider", "analyticsDisabled", "projectsDirectory", "configDirectory", "loginExpiresAt", "consoleProfileSignInOffered"],
+    "valuesObserved": {"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"},
+    "note": "Observed only in this cloud container, where the credential comes from the session. A /login subscription session in the operator's Termux was not observed; the value claude.ai for authMethod is expected but unobserved. API-key and cloud-provider values were not observed either, so the adapter accepts only the two subscription values and fails closed on anything else. No account identifiers are recorded."
+  }
+}
