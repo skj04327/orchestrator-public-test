@@ -28,6 +28,7 @@ on:
       - scripts/local-worker-bridge*
       - scripts/independent-check*
       - scripts/local-independent-checks*
+      - scripts/local-independent-review*
       - scripts/isolated-check*
       - scripts/docker-command.mjs
       - scripts/docker-stream-input.test.mjs

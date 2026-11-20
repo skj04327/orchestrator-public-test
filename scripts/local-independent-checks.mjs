@@ -33,7 +33,7 @@ async function optional(path){try{
 }catch(e){if(e.code==='ENOENT')return null;throw e;}}
 function checkClaim(claim,state){
   const disk=claim.schemaVersion===2;
-  if(!exact(claim,fields(claim))||!(disk?claim.inputProfile==='disk-v1':claim.schemaVersion===1)||
+  if(state.phase!=='awaiting-independent-validation'||!exact(claim,fields(claim))||!(disk?claim.inputProfile==='disk-v1':claim.schemaVersion===1)||
     !handoffContext(claim.context).equals(handoffContext(state.context))||claim.artifactSha256!==state.artifactSha256||!digest(claim.artifactSha256)||
     !digest(disk?claim.baselineManifestSha256:claim.baselineContentSha256)||!digest(claim.candidateContentSha256)||
     typeof claim.baseSha!=='string'||! /^[a-f0-9]{40}$/.test(claim.baseSha)||typeof claim.imageId!=='string'||! /^sha256:[a-f0-9]{64}$/.test(claim.imageId))throw Error('Invalid independent claim');

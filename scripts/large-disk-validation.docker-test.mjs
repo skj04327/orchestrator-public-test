@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {mkdir,mkdtemp,rm,readFile,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {createHash} from 'node:crypto';
+import {createHash,generateKeyPairSync,sign} from 'node:crypto';
 import {makeLocalReceipt} from './test-fixtures/local-receipt.mjs';
 import {prepareLocalJob,runPreparedLocalJob,readLocalJob} from './local-jobs.mjs';
 import {recipientKey,seal} from './private-handoff.mjs';
@@ -13,6 +13,7 @@ import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import * as stageRunner from './disk-baseline-check.mjs';
 import * as independent from './local-independent-checks.mjs';
+import {prepareLocalIndependentReview,reviewVerdictMessage,submitLocalIndependentReview,readLocalIndependentReview} from './local-independent-review.mjs';
 import {prepareOfflineNpmDependencies} from './offline-npm-runtime.mjs';
 import {captureDiskCheckInput} from './disk-check-input.mjs';
 import {diskCheckFixture,encoded} from './test-fixtures/disk-check.mjs';
@@ -117,6 +118,9 @@ test('six projected disk checks accept a bound local reply and install locked de
   const root=await mkdtemp(join(tmpdir(),'disk-six-real-'));
   try{
     const f=await localFixture(root,{withDependencies:true,projected:true,candidateOnly:true}),options={...f,imageId,timeoutMs:30000};
+    const reviewer=generateKeyPairSync('ed25519');
+    const reviewContext={id:f.id,stateRoot:f.stateRoot,reviewerPublicKey:reviewer.publicKey};
+    await assert.rejects(prepareLocalIndependentReview({...f,...reviewContext}));
     const missing=await stageRunner.runDiskBaselineStage({diskSnapshot:f.diskSnapshot,imageId,stage:'build',timeoutMs:30000});
     assert.equal(missing.failureKind,'check_failed');
     await assert.rejects(independent.runLargeDiskIndependentChecks({...options,offlineDependencies:structuredClone(f.offlineDependencies)}));
@@ -147,6 +151,15 @@ test('six projected disk checks accept a bound local reply and install locked de
     assert.equal(status.inputProfile,'disk-v1');
     assert.equal(status.baselineBinding,'github-main-projected');
     assert.deepEqual(status.baselineProvenance.projection,f.diskSnapshot.projection);
+    const {request,files}=await prepareLocalIndependentReview({...f,...reviewContext});
+    assert.equal(request.candidateContentSha256,report.candidateContentSha256);
+    assert.equal(request.baselineManifestSha256,report.baselineManifestSha256);
+    assert.deepEqual(files.map(({path})=>path),['src/status.ts']);
+    const signature=sign(null,reviewVerdictMessage(request,'pass'),reviewer.privateKey);
+    const review=await submitLocalIndependentReview({...reviewContext,verdict:'pass',signature});
+    assert.equal(review.phase,'review-passed');
+    assert.equal(review.publishAuthorized,false);
+    assert.deepEqual(await readLocalIndependentReview(reviewContext),review);
   }finally{await rm(root,{recursive:true,force:true});}
 });
 test('baseline or candidate command failure still compares all six stages and forged worker audit never grants pass',async()=>{
