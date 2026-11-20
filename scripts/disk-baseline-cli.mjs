@@ -24,7 +24,10 @@ async function main(){
     else{let claimed=true;try{await lstat(join(directory,baseSha+'.claim'));}catch(e){if(e.code!=='ENOENT')throw e;claimed=false;}
       result={phase:claimed?'running-or-needs-recovery':'not-captured',baseSha};}
   }else throw Error('Unsupported disk baseline command');
-  console.log(JSON.stringify({phase:result.phase,baseSha:result.baseSha,fileCount:result.fileCount,totalBytes:result.totalBytes,excludedFileCount:result.excludedFileCount??result.projection?.excludedFileCount,projectionSha256:result.projectionSha256??result.projection?.sha256,publishAuthorized:false}));
+  const snapshot=result.snapshot??result;
+  console.log(JSON.stringify({phase:result.phase,baseSha:result.baseSha,fileCount:result.fileCount,totalBytes:result.totalBytes,
+    excludedFileCount:result.excludedFileCount??result.projection?.excludedFileCount,projectionSha256:result.projectionSha256??result.projection?.sha256,
+    baselineManifestSha256:snapshot.executionEligible?snapshot.manifestSha256:undefined,publishAuthorized:false}));
 }
 if(process.argv[1]&&pathToFileURL(resolve(process.argv[1])).href===import.meta.url)
   main().catch(()=>{console.error('RESULT: DISK_BASELINE_FAILED');process.exitCode=1;});

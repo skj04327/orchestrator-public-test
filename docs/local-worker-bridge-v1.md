@@ -48,6 +48,18 @@ node scripts/local-job-cli.mjs status <task-id> <job-root>
 
 독립 검사기는 기존의 메모리 또는 검증된 디스크 스냅샷에만 변경을 적용한다. Docker 안에서 오프라인 `npm ci`와 기준본·변경본 각각의 타입 검사, 전체 단위 테스트, 빌드를 실행한다. 받은 변경을 기존 테스트나 프로젝트 설정에 덮어쓰는 행위는 차단한다. 검사기에 구독 인증, 복호화 키, 게시 토큰을 전달하지 않는다. 두 형식의 결과 모두 독립 리뷰 전까지 게시가 잠겨 있다. 현재 GitHub 게시기는 새 후보 형식을 받지 않는다.
 
+## 로컬 후보 응답 접수
+
+완료된 응답을 신뢰된 로컬 호스트에서 `submitLocalCandidate()` 또는 아래 명령으로 제출할 수 있다. 공급자 로그인이나 모델 호출 없이 표준 입력의 UTF-8 JSON을 받는다. CLI는 입력에 800,000바이트와 30초 상한을 적용하고 GitHub Actions에서는 실행을 거부한다.
+
+```sh
+node scripts/local-job-cli.mjs submit-candidate "$TASK_ID" "$JOB_ROOT" "$DISK_ROOT" "$BASE_SHA" "$RECIPIENT_PUBLIC_KEY" < "$PRIVATE_REPLY_PATH"
+```
+
+응답은 `schemaVersion` 값 `1`, 준비된 작업의 `runId`, 실행용 디스크 스냅샷의 `baselineManifestSha256`, `files` 배열로 구성된다. 각 파일의 `path`와 `content`는 문자열이다. `local-job-cli.mjs status`에서 `context.runId`를 얻고, `disk-baseline-cli.mjs status`에서 실행용 스냅샷의 `baselineManifestSha256`을 얻는다. 기준 커밋은 호스트의 스냅샷에서 결정한다. 스냅샷을 새로 수집하면 같은 커밋이라도 지문이 달라질 수 있다.
+
+작업·스냅샷 불일치, 위조·보관 전용 스냅샷, 허용 경로 밖의 파일, 기존 테스트 덮어쓰기, 형식과 크기 위반은 접수 확정 전에 거부한다. 올바른 응답 하나만 배타적으로 암호화해 저장한다. 상태 출력에는 후보 원문이 포함되지 않는다. 접수 뒤 상태는 `awaiting-independent-validation`이다. `runLargeDiskIndependentChecks()`에서 같은 디스크 지문이 있어야 검사할 수 있고 게시에는 독립 리뷰가 필요하다.
+
 다음 단위는 공급자별 인증·허용 데이터·아웃바운드 연결 정책을 갖춘 후보 생성기다. 실제 구독 CLI 호출과 독립 리뷰·격리 게시 경로의 연결은 검증이 남아 있다.
 
 ## 검증과 미완료 범위
