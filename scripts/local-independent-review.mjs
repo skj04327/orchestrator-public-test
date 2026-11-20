@@ -74,12 +74,7 @@ export async function readLocalIndependentReview({id,stateRoot,reviewerPublicKey
   return verifiedStatus(request,record,reviewerPublicKey);
 }
 
-export async function prepareLocalIndependentReview({id,stateRoot,privateKey,diskSnapshot,reviewerPublicKey,signal}){
-  checkLocal(signal);
-  const reviewerKeySha256=fingerprint(reviewerPublicKey);
-  const report=await readIndependentCheckStatus({id,stateRoot});
-  const request=requestFromReport(report,reviewerKeySha256),directory=join(stateRoot,id);
-  if(!request||await readRecord(join(directory,'independent-review.json')))throw Error('Local review cannot be prepared');
+async function readCheckedCandidate({request,report,directory,privateKey,diskSnapshot,signal}){
   const encrypted=await readPrivateStateFile(join(directory,'result.enc'),MAX_HANDOFF_BYTES);
   if(hash(encrypted)!==request.artifactSha256)throw Error('Candidate artifact changed');
   const bundle=open(encrypted,privateKey,report.context);
@@ -88,6 +83,26 @@ export async function prepareLocalIndependentReview({id,stateRoot,privateKey,dis
     input.candidateContentSha256!==request.candidateContentSha256)throw Error('Candidate differs from checked input');
   checkLocal(signal);
   return {request,files:validateLocalCheckBundle(bundle,report.context).files};
+}
+
+export async function prepareLocalIndependentReview({id,stateRoot,privateKey,diskSnapshot,reviewerPublicKey,signal}){
+  checkLocal(signal);
+  const reviewerKeySha256=fingerprint(reviewerPublicKey);
+  const report=await readIndependentCheckStatus({id,stateRoot});
+  const request=requestFromReport(report,reviewerKeySha256),directory=join(stateRoot,id);
+  if(!request||await readRecord(join(directory,'independent-review.json')))throw Error('Local review cannot be prepared');
+  return readCheckedCandidate({request,report,directory,privateKey,diskSnapshot,signal});
+}
+
+export async function loadReviewedLocalCandidate({id,stateRoot,privateKey,diskSnapshot,reviewerPublicKey,signal}){
+  checkLocal(signal);
+  const reviewerKeySha256=fingerprint(reviewerPublicKey);
+  const report=await readIndependentCheckStatus({id,stateRoot});
+  const request=requestFromReport(report,reviewerKeySha256),directory=join(stateRoot,id);
+  const record=await readRecord(join(directory,'independent-review.json'));
+  if(!request||!record||verifiedStatus(request,record,reviewerPublicKey).phase!=='review-passed')throw Error('Passed local review required');
+  const candidate=await readCheckedCandidate({request,report,directory,privateKey,diskSnapshot,signal});
+  return {...candidate,reviewRequestSha256:record.requestSha256,treeSha:report.baselineProvenance.treeSha};
 }
 
 export async function submitLocalIndependentReview({id,stateRoot,reviewerPublicKey,verdict,signature,signal}){

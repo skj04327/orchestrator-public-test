@@ -29,6 +29,7 @@ on:
       - scripts/independent-check*
       - scripts/local-independent-checks*
       - scripts/local-independent-review*
+      - scripts/local-reviewed-draft*
       - scripts/isolated-check*
       - scripts/docker-command.mjs
       - scripts/docker-stream-input.test.mjs
