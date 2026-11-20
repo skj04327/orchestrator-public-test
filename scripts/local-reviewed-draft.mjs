@@ -6,7 +6,8 @@ import {readLocalJob} from './local-jobs.mjs';
 import {loadReviewedLocalCandidate} from './local-independent-review.mjs';
 import {MAX_HANDOFF_BYTES} from './private-handoff.mjs';
 import {readPrivateStateFile,writePrivateStateFile} from './private-queue.mjs';
-import {BASELINE_REPOSITORY,checkTree,objectHash,readMainInventory,readPrivateMainHead} from './main-inventory.mjs';
+import {BASELINE_REPOSITORY,checkTree,objectHash} from './main-inventory.mjs';
+import {readPublishingInventory,readPublishingMain,verifyDraftActionsPolicy} from './local-draft-actions-policy.mjs';
 import {assertCandidateOverlayPaths} from './independent-check-input.mjs';
 import {digestFileBuffers,isVerifiedDigest} from './verified-manifest.mjs';
 
@@ -16,7 +17,7 @@ const privateRepo=repo=>repo?.private===true&&repo.full_name===BASELINE_REPOSITO
 const prUrl=value=>typeof value==='string'&&/^https:\/\/github\.com\/skj04327\/the-twilight-of-korea\/pull\/[1-9][0-9]{0,19}$/.test(value);
 const branchFor=context=>'orchestrator/local-'+context.taskId+'-'+context.runId;
 const failure=kind=>Object.assign(Error('Local Draft publish failed'),{failureKind:kind});
-const claimFields=['schemaVersion','taskId','runId','branch','baseSha','artifactSha256','candidateContentSha256','reviewRequestSha256'];
+const baseClaimFields=['schemaVersion','taskId','runId','branch','baseSha','artifactSha256','candidateContentSha256','reviewRequestSha256'];
 const exact=(value,fields)=>value&&typeof value==='object'&&!Array.isArray(value)&&
   Object.keys(value).length===fields.length&&fields.every(field=>Object.hasOwn(value,field));
 
@@ -60,8 +61,10 @@ export async function readLocalDraftStatus({id,stateRoot}){
     if(receipt||plannedHead)throw failure('invalid_publish_state');
     return status(id,'not-started');
   }
-  if(task.phase!=='awaiting-independent-validation'||!exact(claim,claimFields)||claim.schemaVersion!==1||claim.taskId!==id||claim.runId!==task.context.runId||
+  const claimFields=claim.schemaVersion===2?[...baseClaimFields,'actionsPolicySha256']:baseClaimFields;
+  if(task.phase!=='awaiting-independent-validation'||!exact(claim,claimFields)||![1,2].includes(claim.schemaVersion)||claim.taskId!==id||claim.runId!==task.context.runId||
     claim.branch!==branchFor(task.context)||!gitSha(claim.baseSha)||claim.artifactSha256!==task.artifactSha256||
+    (claim.schemaVersion===2&&!isVerifiedDigest(claim.actionsPolicySha256))||
     !['artifactSha256','candidateContentSha256','reviewRequestSha256'].every(field=>isVerifiedDigest(claim[field])))throw failure('invalid_publish_state');
   if(plannedHead&&(!exact(plannedHead,['headSha'])||!gitSha(plannedHead.headSha)))throw failure('invalid_publish_state');
   if(!receipt)return status(id,'needs-recovery',{branch:claim.branch,...(plannedHead??{})});
@@ -77,7 +80,7 @@ function githubClient(token,signal){
   const checkStopped=()=>{if(deadline.aborted)throw failure(signal?.aborted?'cancelled':'publish_timeout');};
   async function request(path,method='GET',payload){
     checkStopped();
-    if(++calls>40)throw failure('publish_request_limit');
+    if(++calls>41)throw failure('publish_request_limit');
     try{
       const response=await fetch(api+path,{method,redirect:'error',signal:AbortSignal.any([deadline,AbortSignal.timeout(20000)]),
         headers:{Authorization:'Bearer '+token,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'},
@@ -128,20 +131,25 @@ function verifyBlob(value,sha,content){
 function verifyRef(value,ref,sha){
   if(value?.ref!==ref||value.object?.type!=='commit'||value.object.sha!==sha)throw failure('remote_ref_mismatch');
 }
+function verifyCommit(commit,{treeSha,baseSha,message,expectedSha=commit?.sha}){
+  if(!gitSha(commit?.sha)||commit.sha!==expectedSha||commit.tree?.sha!==treeSha||!Array.isArray(commit.parents)||
+    commit.parents.length!==1||commit.parents[0]?.sha!==baseSha||commit.message!==message)throw failure('remote_commit_mismatch');
+}
 
-export async function publishLocalReviewedDraft({id,stateRoot,privateKey,diskSnapshot,reviewerPublicKey,token,signal}){
+export async function publishLocalReviewedDraft({id,stateRoot,privateKey,diskSnapshot,reviewerPublicKey,token,actionsPolicy,signal}){
   if(process.env.GITHUB_ACTIONS==='true'||signal?.aborted)throw failure('local_host_required');
   if((await readLocalDraftStatus({id,stateRoot})).phase!=='not-started')throw failure('already_claimed');
   const evidence={id,stateRoot,privateKey,diskSnapshot,reviewerPublicKey,signal};
   const {request:review,files,reviewRequestSha256,treeSha}=await loadReviewedLocalCandidate(evidence);
   const {request,checkStopped}=githubClient(token,signal),baseSha=review.baseSha;
-  const inventory=await readMainInventory({request,expectedBaseSha:baseSha});
+  const inventory=await readPublishingInventory({request,expectedBaseSha:baseSha});
   if(inventory.treeSha!==treeSha||digestFileBuffers(files)!==review.candidateContentSha256)throw failure('publish_evidence_mismatch');
+  const {actionsPolicySha256}=await verifyDraftActionsPolicy({actionsPolicy,inventory,request});
   const plan=planTree(inventory,files);
   const branch=branchFor({taskId:id,runId:review.runId}),ref='refs/heads/'+branch,dir=join(stateRoot,id);
-  const claim={schemaVersion:1,taskId:id,runId:review.runId,branch,baseSha,artifactSha256:review.artifactSha256,
-    candidateContentSha256:review.candidateContentSha256,reviewRequestSha256};
-  async function requireCurrentMain(){if(await readPrivateMainHead(request)!==baseSha)throw failure('main_moved');}
+  const claim={schemaVersion:2,taskId:id,runId:review.runId,branch,baseSha,artifactSha256:review.artifactSha256,
+    candidateContentSha256:review.candidateContentSha256,reviewRequestSha256,actionsPolicySha256};
+  async function requireCurrentMain(){if(await readPublishingMain(request)!==baseSha)throw failure('main_moved');}
   await requireCurrentMain();
   checkStopped();
   await recordState(dir,'local-draft-claim.json',claim,checkStopped);
@@ -162,9 +170,11 @@ export async function publishLocalReviewedDraft({id,stateRoot,privateKey,diskSna
   const tree=await request('/git/trees','POST',{base_tree:treeSha,tree:plan.updates});
   if(!gitSha(tree?.sha))throw failure('remote_tree_mismatch');
   verifyTree(await request('/git/trees/'+tree.sha+'?recursive=1'),tree.sha,plan);
-  const commit=await request('/git/commits','POST',{message:'Implement orchestrator task '+id,tree:tree.sha,parents:[baseSha]});
-  if(!gitSha(commit?.sha)||commit.tree?.sha!==tree.sha||!Array.isArray(commit.parents)||
-    commit.parents.length!==1||commit.parents[0]?.sha!==baseSha)throw failure('remote_commit_mismatch');
+  const message='[skip ci] Implement orchestrator task '+id;
+  const commit=await request('/git/commits','POST',{message,tree:tree.sha,parents:[baseSha]});
+  const commitEvidence={treeSha:tree.sha,baseSha,message};
+  verifyCommit(commit,commitEvidence);
+  verifyCommit(await request('/git/commits/'+commit.sha),{...commitEvidence,expectedSha:commit.sha});
 
   const current=await loadReviewedLocalCandidate(evidence);
   if(current.reviewRequestSha256!==reviewRequestSha256)throw failure('publish_evidence_mismatch');
