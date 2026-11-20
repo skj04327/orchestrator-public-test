@@ -1,12 +1,13 @@
 import test,{before,after} from 'node:test';
 import assert from 'node:assert/strict';
-import {generateKeyPairSync,sign} from 'node:crypto';
+import {createHash,generateKeyPairSync,sign} from 'node:crypto';
 import fs from 'node:fs';
 import {mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';
 import {syncBuiltinESMExports} from 'node:module';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {publishLocalReviewedDraft,readLocalDraftStatus} from './local-reviewed-draft.mjs';
+import {inspectDraftActionsPolicy} from './local-draft-actions-policy.mjs';
 import {prepareLocalIndependentReview,reviewVerdictMessage,submitLocalIndependentReview} from './local-independent-review.mjs';
 import {prepareLocalJob} from './local-jobs.mjs';
 import {submitLocalCandidate} from './local-candidate-intake.mjs';
@@ -23,11 +24,17 @@ const repo='skj04327/the-twilight-of-korea',origin='https://api.github.com/repos
 const token='SYNTHETIC_DRAFT_TOKEN',commitSha='1'.repeat(40);
 const json=value=>Buffer.from(JSON.stringify(value));
 
-async function fixture(root,{verdict='pass',maliciousTree=false}={}){
+async function fixture(root,{verdict='pass',maliciousTree=false,extraWorkflow=false,fullBudget=false}={}){
   const f=await makeLocalReceipt(root),job=await prepareLocalJob(f);
+  const workflowText='name: Synthetic\non:\n  push:\n  pull_request:\n  workflow_dispatch:\n';
+  const workflows=Array.from({length:fullBudget?8:1},(_,index)=>({path:'.github/workflows/check-'+index+'.yml',
+    sha256:createHash('sha256').update(workflowText).digest('hex'),events:['push','pull_request','workflow_dispatch']}));
+  const extra=[encoded('.codex/config.toml','SYNTHETIC_EXCLUDED_SETTINGS'),...workflows.map(entry=>encoded(entry.path,workflowText))];
+  if(extraWorkflow)extra.push(encoded('.github/workflows/unreviewed.yml','on: pull_request_target'));
   const {diskSnapshot,source,bundle}=await diskCheckFixture(root,{context:job.context,purpose:'checks-projected',
-    extra:[encoded('.codex/config.toml','SYNTHETIC_EXCLUDED_SETTINGS')]});
+    extra});
   const candidate=[encoded('src/status.ts','export const n=5;'),encoded('tests/new.test.ts','// SYNTHETIC ADDED TEST')];
+  if(fullBudget)for(let index=0;index<6;index++)candidate.push(encoded('src/add-'+index+'.ts','export const additional='+index+';'));
   replaceCandidate(bundle,candidate);
   const key=recipientKey('SYNTHETIC_PRIVATE_HANDOFF',job.context),reviewer=generateKeyPairSync('ed25519');
   const response=json({schemaVersion:1,runId:job.context.runId,baselineManifestSha256:diskSnapshot.manifestSha256,
@@ -40,7 +47,8 @@ async function fixture(root,{verdict='pass',maliciousTree=false}={}){
   const dir=join(f.stateRoot,f.id);
   await writeFile(join(dir,'independent-claim.json'),json(claim),{mode:0o600});
   await writeFile(join(dir,'independent-report.json'),json(report),{mode:0o600});
-  const options={...f,diskSnapshot,privateKey:key.privateKey,reviewerPublicKey:reviewer.publicKey,token};
+  const actionsPolicy={schemaVersion:1,workflows};
+  const options={...f,diskSnapshot,privateKey:key.privateKey,reviewerPublicKey:reviewer.publicKey,token,actionsPolicy};
   if(verdict){
     const {request}=await prepareLocalIndependentReview(options);
     await submitLocalIndependentReview({...options,verdict,signature:sign(null,reviewVerdictMessage(request,verdict),reviewer.privateKey)});
@@ -64,13 +72,19 @@ function fakeGitHub(t,f,{mode}={}){
     const target={full_name:repo,private:true};
     if(method==='GET'){
       if(!route&&(mode==='public'||(mode==='public-before-write'&&calls.filter(call=>call.route==='').length>1)))return Response.json({...target,private:false});
+      if(!route)return Response.json({...target,default_branch:mode==='unknown-default'?'other':'main'});
       const written=path=>calls.some(call=>call.method==='POST'&&call.route===path);
       if(route==='/git/ref/heads/main'&&(mode==='stale'||(mode==='moved'&&written('/git/commits'))||(mode==='moved-after-ref'&&written('/git/refs')))){
         return Response.json({object:{type:'commit',sha:'2'.repeat(40)}});
       }
       if(route==='/git/ref/heads/'+f.branch)return Response.json({ref:'refs/heads/'+f.branch,object:{type:'commit',sha:commitSha}});
+      if(route==='/git/commits/'+commitSha){
+        const commit=calls.find(call=>call.method==='POST'&&call.route==='/git/commits').data;
+        return Response.json({sha:commitSha,parents:[{sha:f.source.baseSha}],tree:{sha:commit.tree},
+          message:mode==='skip-removed-readback'?'Synthetic commit without marker':commit.message});
+      }
       const value=f.source.values.get(route)??f.next.values.get(route);
-      if(route.startsWith('/git/blobs/')&&mode==='bad-blob')return Response.json({...value,content:'Zg=='});
+      if(route.startsWith('/git/blobs/')&&mode==='bad-blob'&&f.changed.some(file=>route.endsWith(file.sha)))return Response.json({...value,content:'Zg=='});
       assert.ok(value,'Unexpected synthetic GET '+route);
       return Response.json(value);
     }
@@ -88,7 +102,9 @@ function fakeGitHub(t,f,{mode}={}){
     }
     if(route==='/git/commits'){
       assert.deepEqual(data.parents,[f.source.baseSha]);assert.equal(data.tree,f.next.treeSha);
-      return Response.json({sha:commitSha,parents:[{sha:f.source.baseSha}],tree:{sha:f.next.treeSha}},{status:201});
+      assert.equal(data.message,'[skip ci] Implement orchestrator task '+f.options.id);
+      return Response.json({sha:commitSha,parents:[{sha:f.source.baseSha}],tree:{sha:f.next.treeSha},
+        message:mode==='skip-removed'?'Synthetic commit without marker':data.message},{status:201});
     }
     if(route==='/git/refs'){
       assert.deepEqual(data,{ref:'refs/heads/'+f.branch,sha:commitSha});
@@ -108,6 +124,10 @@ test('the local publisher verifies the signed candidate and creates a single ato
   const root=await mkdtemp(join(tmpdir(),'local-draft-'));
   try{
     const f=await fixture(root),calls=fakeGitHub(t,f);
+    const policy=await inspectDraftActionsPolicy({actionsPolicy:f.options.actionsPolicy,expectedBaseSha:f.source.baseSha,
+      get:path=>path===''?{full_name:repo,private:true,default_branch:'main'}:f.source.get(path)});
+    assert.equal(policy.phase,'actions-policy-verified');
+    assert.equal(policy.workflowCount,1);assert.equal(policy.publishAuthorized,false);
     assert.equal((await readLocalDraftStatus(f.options)).phase,'not-started');
     const competing=await Promise.allSettled([0,1].map(()=>publishLocalReviewedDraft(f.options)));
     const done=competing.filter(result=>result.status==='fulfilled');
@@ -119,6 +139,7 @@ test('the local publisher verifies the signed candidate and creates a single ato
     assert.deepEqual(calls.filter(call=>call.method==='POST').map(call=>call.route),['/git/blobs','/git/blobs','/git/trees','/git/commits','/git/refs','/pulls']);
     assert.doesNotMatch(JSON.stringify(calls),/SYNTHETIC_EXCLUDED_SETTINGS|SYNTHETIC_LOCAL_JOB/);
     assert.doesNotMatch(await readFile(join(f.dir,'local-draft.json'),'utf8'),/SYNTHETIC_DRAFT_TOKEN|export const/);
+    assert.equal(JSON.parse(await readFile(join(f.dir,'local-draft.json'),'utf8')).actionsPolicySha256,policy.actionsPolicySha256);
   }finally{await rm(root,{recursive:true,force:true});}
 });
 
@@ -140,7 +161,7 @@ test('no token request occurs for an absent review, signed rejection, altered ca
 });
 
 test('private and main checks prevent preflight writes, and ambiguous or changed GitHub state requires recovery',async t=>{
-  for(const mode of ['public','public-before-write','stale','bad-blob','changed-tree','moved','branch-exists','moved-after-ref','wrong-pr','pull-response-lost']){
+  for(const mode of ['public','public-before-write','stale','bad-blob','changed-tree','moved','skip-removed','skip-removed-readback','branch-exists','moved-after-ref','wrong-pr','pull-response-lost']){
     const root=await mkdtemp(join(tmpdir(),'local-draft-recovery-'));
     try{
       const f=await fixture(root,{maliciousTree:mode==='changed-tree'}),calls=fakeGitHub(t,f,{mode});
@@ -160,6 +181,35 @@ test('private and main checks prevent preflight writes, and ambiguous or changed
       t.mock.restoreAll();
     }finally{await rm(root,{recursive:true,force:true});}
   }
+});
+
+test('unreviewed workflow bytes, events or default branch prevent every publication write',async t=>{
+  for(const mode of ['absent','different-digest','unsafe-event','missing-event','unrecognized-file','unknown-default']){
+    const root=await mkdtemp(join(tmpdir(),'local-draft-actions-'));
+    try{
+      const f=await fixture(root,{extraWorkflow:mode==='unrecognized-file'}),calls=fakeGitHub(t,f,{mode});
+      const policy=structuredClone(f.options.actionsPolicy);
+      if(mode==='different-digest')policy.workflows[0].sha256='f'.repeat(64);
+      if(mode==='unsafe-event')policy.workflows[0].events.push('pull_request_target');
+      if(mode==='missing-event')delete policy.workflows[0].events[0];
+      await assert.rejects(publishLocalReviewedDraft({...f.options,actionsPolicy:mode==='absent'?undefined:policy}));
+      assert.equal((await readLocalDraftStatus(f.options)).phase,'not-started');
+      assert.ok(calls.every(call=>call.method==='GET'));
+      t.mock.restoreAll();
+    }finally{await rm(root,{recursive:true,force:true});}
+  }
+});
+
+test('eight workflow blobs and eight unique candidate blobs fit the publication request limit',async t=>{
+  const root=await mkdtemp(join(tmpdir(),'local-draft-limit-'));
+  try{
+    const f=await fixture(root,{fullBudget:true}),calls=fakeGitHub(t,f);
+    const {workflowCount}=await inspectDraftActionsPolicy({actionsPolicy:f.options.actionsPolicy,expectedBaseSha:f.source.baseSha,
+      get:path=>path===''?{full_name:repo,private:true,default_branch:'main'}:f.source.get(path)});
+    assert.equal(workflowCount,8);
+    assert.equal((await publishLocalReviewedDraft(f.options)).phase,'draft-created');
+    assert.equal(calls.length,41);
+  }finally{await rm(root,{recursive:true,force:true});}
 });
 
 test('status can overlap completion of a publish without claiming inconsistent state',async t=>{
