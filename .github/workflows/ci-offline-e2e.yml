@@ -25,6 +25,7 @@ on:
       - scripts/local-job*
       - scripts/local-candidate-bundle*
       - scripts/local-candidate-intake*
+      - scripts/local-developer-input*
       - scripts/local-worker-bridge*
       - scripts/independent-check*
       - scripts/local-independent-checks*
